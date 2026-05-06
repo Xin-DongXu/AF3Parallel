@@ -190,42 +190,40 @@ A typical end-to-end run:
 
 ## Built-in GPU profiles
 
-`AF3Parallel.py` ships with two calibrated memory-and-runtime profiles
-(measured on **NVIDIA A800 80 GB** and **NVIDIA RTX 4090 24 GB**) and
-exposes them through 11 named presets that map each common GPU model to
-the appropriate profile and VRAM size:
+`AF3Parallel.py` ships with built-in profiles measured on two GPU models.
+**Only these two are officially supported**; all other presets listed in
+`--help` are unmeasured extrapolations and should not be relied upon.
 
-| Preset key   | Profile family | VRAM   | Label                       |
-| ------------ | -------------- | ------ | --------------------------- |
-| `a800-80g`   | A800           | 80 GB  | NVIDIA A800 80 GB           |
-| `a100-80g`   | A800           | 80 GB  | NVIDIA A100 80 GB           |
-| `a100-40g`   | A800           | 40 GB  | NVIDIA A100 40 GB           |
-| `h100-80g`   | A800           | 80 GB  | NVIDIA H100 80 GB           |
-| `h100-94g`   | A800           | 94 GB  | NVIDIA H100 NVL 94 GB       |
-| `a6000-48g`  | A800           | 48 GB  | NVIDIA RTX A6000 48 GB      |
-| `v100-32g`   | A800           | 32 GB  | NVIDIA V100 32 GB           |
-| `rtx4090`    | RTX 4090       | 24 GB  | NVIDIA RTX 4090 24 GB       |
-| `rtx3090`    | RTX 4090       | 24 GB  | NVIDIA RTX 3090 24 GB       |
-| `rtx3090ti`  | RTX 4090       | 24 GB  | NVIDIA RTX 3090 Ti 24 GB    |
-| `rtx4080`    | RTX 4090       | 16 GB  | NVIDIA RTX 4080 16 GB       |
+| Preset key | VRAM   | Tested on             |
+| ---------- | ------ | --------------------- |
+| `a800-80g` | 80 GB  | NVIDIA A800 80 GB     |
+| `rtx4090`  | 24 GB  | NVIDIA RTX 4090 24 GB |
 
 Pick one with `--gpu-preset`:
 
 ```bash
+python AF3Parallel.py --gpu-preset a800-80g ...
 python AF3Parallel.py --gpu-preset rtx4090 ...
-python AF3Parallel.py --gpu-preset a100-80g ...
 ```
 
-If you pass neither `--gpu-preset` nor `--gpu-memory`, `AF3Parallel.py`
-queries `nvidia-smi` for the first selected GPU, matches the reported
-total VRAM against the preset table within a +/-512 MB tolerance, and
-auto-selects the corresponding profile. The match is logged at startup;
-if no preset matches, the run continues with the detected VRAM size and
-the default A800 profile (and prints a warning).
+**Any other GPU model requires a custom profile.** Run
+`AF3_GPU_Memory_Profiler.py` on your hardware first, then pass the
+resulting TSV via `--memory-profile`:
 
-For any other GPU, profile once with `AF3_GPU_Memory_Profiler.py` and
-pass the resulting TSV via `--memory-profile`. Run
-`python AF3Parallel.py --help` for the canonical preset list.
+```bash
+python AF3_GPU_Memory_Profiler.py \
+    -i ./profile_inputs -o my_gpu_profile.tsv \
+    --sif alphafold3.sif \
+    --af3-db ./af3_DB --models ./models
+
+python AF3Parallel.py ... --memory-profile my_gpu_profile.tsv
+```
+
+If you pass neither `--gpu-preset` nor `--memory-profile`, `AF3Parallel.py`
+queries `nvidia-smi`, attempts to match the detected VRAM against the
+preset table within a +/-512 MB tolerance, and falls back to the A800
+profile if nothing matches (a warning is printed). **This fallback is not
+a substitute for proper profiling on untested hardware.**
 
 ---
 
