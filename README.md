@@ -18,11 +18,104 @@ batch in parallel across all available GPUs with VRAM-aware scheduling.
 | --- | --- |
 | `AF3Parallel.py` | Main executor. Distributes AF3 jobs across multiple GPUs with token-balanced LPT scheduling, joint VRAM and wall-clock batching, and a multi-anchor temporal-wave scheduler that hides small jobs in the VRAM shadow of long ones. |
 | `AF3_GPU_Memory_Profiler.py` | One-shot peak-VRAM scan. Runs AF3 on a representative sample of inputs and records peak GPU memory plus runtime per token count, producing the TSV consumed by the executor and the estimators. |
-| `AF3__GPU_Memory_Time-Series_Profiler.py` | Time-series VRAM profiler. Samples GPU memory at sub-second intervals during AF3 runs to study allocation curves and detect transient spikes. |
+| `AF3_GPU_Memory_Time-Series_Profiler.py` | Time-series VRAM profiler. Samples GPU memory at sub-second intervals during AF3 runs to study allocation curves and detect transient spikes. |
 | `AF3_GPU_time_estimate.py` | Estimates total serial GPU runtime for a directory of AF3 input JSONs against a token-runtime profile. |
 | `AF3_CPU_time_estimate.py` | Estimates total CPU/MSA (data-pipeline) runtime for a directory of AF3 input JSONs against a protein-length profile. |
 | `AF3_JSON_Integrator.py` | Batch-modify AF3 input JSONs: set seeds, add/replace ligands (SMILES or CCD codes), nucleic-acid chains, or metal ions. Single-file, bulk and CSV fan-out modes. |
 | `GPU_monitor.py` | Lightweight standalone GPU memory monitor. Polls `nvidia-smi`, writes TSV, optional auto-exit when all monitored GPUs idle for a sustained period. |
+
+---
+
+## Prerequisites
+
+### 1. AlphaFold 3 (v3.0.1) — required first
+
+**These scripts are wrappers around AlphaFold 3. You must complete the
+official AF3 setup before using any script in this repository.**
+
+Follow the [AlphaFold 3 installation guide](https://github.com/google-deepmind/alphafold3/blob/main/docs/installation.md)
+to obtain and verify the following four components:
+
+| Component | What it is | Typical path used below |
+| --- | --- | --- |
+| Singularity image | `alphafold3.sif` built from the official Dockerfile | `./alphafold3.sif` |
+| Model weights | `af3.bin` (or `af3.bin.zst`) — request access from Google DeepMind | `./models/` |
+| Genetic databases | ~394 GB of sequence databases + ~234 GB PDB mmCIF | `./af3_DB/` |
+| `nvidia-smi` | Ships with the NVIDIA driver; verify with `nvidia-smi` | in `PATH` |
+
+> **Verify your AF3 setup first.** Before installing AF3Parallel, confirm
+> that a plain `singularity exec` command can run a single-job prediction
+> end-to-end:
+> ```bash
+> singularity exec --nv \
+>     --bind $HOME/af_input:/root/af_input \
+>     --bind $HOME/af_output:/root/af_output \
+>     --bind ./models:/root/models \
+>     --bind ./af3_DB:/root/public_databases \
+>     alphafold3.sif \
+>     python /app/alphafold/run_alphafold.py \
+>         --json_path=/root/af_input/fold_input.json \
+>         --model_dir=/root/models \
+>         --db_dir=/root/public_databases \
+>         --output_dir=/root/af_output
+> ```
+> If this command succeeds, your environment is ready for AF3Parallel.
+
+**Hardware requirements (from the AF3 installation guide):**
+- Linux (Ubuntu 22.04 LTS recommended)
+- NVIDIA GPU with Compute Capability ≥ 8.0 (A100, H100, RTX 4090, etc.)
+- ≥ 64 GB RAM recommended for the genetic-search (MSA) stage
+- ≥ 1 TB SSD for the genetic databases
+
+### 2. Python and optional packages
+
+- **Python** >= 3.8
+- `psutil` *(optional)* — enables `AF3Parallel.py`'s automatic global
+  concurrency cap, which derives a safe `--max-concurrent-tasks` from
+  total system RAM. Without it the auto-cap is silently skipped; you can
+  still pass `--max-concurrent-tasks N` explicitly.
+- `rdkit` *(optional)* — gives more accurate ligand heavy-atom counts for
+  SMILES strings; both `AF3Parallel.py` and `AF3_GPU_time_estimate.py`
+  fall back to a built-in regex tokenizer if `rdkit` is not importable.
+
+---
+
+## Installation
+
+```bash
+# Step 1 — complete the AlphaFold 3 v3.0.1 setup (see above)
+
+# Step 2 — clone this repository into the same working directory
+git clone https://github.com/Xin-DongXu/AF3Parallel.git
+cd AF3Parallel
+
+# Step 3 — install optional Python dependencies
+pip install -r requirements.txt
+
+# Step 4 — (optional) make scripts directly executable
+chmod +x *.py
+```
+
+Your working directory should look similar to:
+
+```
+/your/working/directory/
+├── alphafold3.sif          # AlphaFold 3 Singularity image
+├── models/                 # AF3 model weights (af3.bin or af3.bin.zst)
+├── af3_DB/                 # AF3 genetic databases (~628 GB)
+├── af_input/               # your AF3 input JSON files
+├── AF3Parallel.py          # ← scripts from this repository
+├── AF3_GPU_Memory_Profiler.py
+├── AF3_GPU_Memory_Time-Series_Profiler.py
+├── AF3_GPU_time_estimate.py
+├── AF3_CPU_time_estimate.py
+├── AF3_JSON_Integrator.py
+└── GPU_monitor.py
+```
+
+The Python scripts are self-contained — there is no package to install. You
+can invoke them with `python script.py ...` or, after `chmod +x`, run them
+directly.
 
 ---
 
@@ -67,6 +160,9 @@ A typical end-to-end run:
        --af3-db ./af3_DB \
        --models ./models
    ```
+   > `AF3_GPU_Memory_Profiler.py` monitors GPU 0 by default. To profile a
+   > different GPU, prefix the command with
+   > `CUDA_VISIBLE_DEVICES=<index>`.
 
 2. **(Optional) Estimate runtime** before launching a large batch:
    ```bash
@@ -82,53 +178,13 @@ A typical end-to-end run:
    python AF3Parallel.py \
        -i  ./af_input \
        -o  results.tsv \
+       --output-dir ./af_output \
        --sif alphafold3.sif \
        --af3-db ./af3_DB \
        --models ./models \
        --gpus 0,1,2,3 \
        --memory-profile my_gpu_profile.tsv
    ```
-
----
-
-## Prerequisites
-
-- **Python** >= 3.8
-- **NVIDIA driver** with `nvidia-smi` in `PATH`
-- **Singularity** in `PATH` (used to run AlphaFold 3)
-- **AlphaFold 3 Singularity image** (`alphafold3.sif`)
-- **AlphaFold 3 model weights** (the directory passed to `--models`)
-- **AlphaFold 3 reference databases** (the directory passed to `--af3-db`)
-
-See the upstream
-[AlphaFold 3 README](https://github.com/google-deepmind/alphafold3) for how
-to obtain the image, weights and databases.
-
-### Optional Python packages
-
-- `psutil` - enables `AF3Parallel.py`'s automatic global concurrency cap,
-  which derives a safe `--max-concurrent-tasks` from total system RAM
-  (see `--cpu-memory-per-task-mb`, `--cpu-memory-reserve-mb`,
-  `--no-cpu-memory-autocap`). Without `psutil` the auto-cap is silently
-  skipped; you can still pass `--max-concurrent-tasks N` explicitly.
-- `rdkit` - when available, gives more accurate ligand heavy-atom counts
-  for SMILES strings; both `AF3Parallel.py` and `AF3_GPU_time_estimate.py`
-  fall back to a built-in regex tokenizer if `rdkit` is not importable.
-
----
-
-## Installation
-
-```bash
-git clone https://github.com/Xin-DongXu/AF3Parallel.git
-cd AF3Parallel
-pip install -r requirements.txt        # only the optional Python deps
-chmod +x *.py                          # optional, all scripts have shebangs
-```
-
-The Python scripts are self-contained - there is no package to install. You
-can either invoke them with `python script.py ...` or, after `chmod +x`,
-run them directly.
 
 ---
 
@@ -182,10 +238,12 @@ this header:
 token_count    peak_memory_mb    runtime_seconds    success
 ```
 
-Extra columns are tolerated and ignored. Rows with `success=False` are
-discarded by the loaders unless explicitly enabled. Sparse profiles
-(non-contiguous token counts) are filled by linear interpolation between
-adjacent measurements.
+`AF3_GPU_Memory_Profiler.py` writes additional diagnostic columns
+(`json_file`, `protein_name`, `protein_length`, `ligand_count`,
+`total_sequences`, `timestamp`); these are tolerated and ignored by the
+loaders. Rows with `success=False` are discarded by the loaders unless
+explicitly enabled. Sparse profiles (non-contiguous token counts) are
+filled by linear interpolation between adjacent measurements.
 
 ---
 
@@ -193,11 +251,12 @@ adjacent measurements.
 
 Every script supports `--help` for the full option list. Selected examples:
 
-### AF3Parallel.py - multi-GPU executor
+### AF3Parallel.py — multi-GPU executor
 
 ```bash
 python AF3Parallel.py \
     -i ./af_input -o results.tsv \
+    --output-dir ./af_output \
     --sif alphafold3.sif \
     --af3-db ./af3_DB --models ./models \
     --gpus 0,1,2,3 \
@@ -220,19 +279,23 @@ python AF3Parallel.py ... --test-only
 python AF3Parallel.py ... --no-skip-existing
 ```
 
+**I/O paths.** `-i DIR` / `-o FILE` are required. `--output-dir DIR`
+(default `./af_output_parallel`) sets where AF3 writes its per-job result
+folders; always specify it explicitly to avoid mixing outputs across runs.
+
 **Resource & runtime budgets.** The executor enforces three independent
-budgets - one VRAM, two wall-clock - plus an estimation safety factor:
+budgets — one VRAM, two wall-clock — plus an estimation safety factor:
 
 - `--gpu-memory MB` / `--vram-margin RATIO` (default 0.95) /
-  `--safety-margin RATIO` (default 0.10) - effective per-GPU VRAM is
+  `--safety-margin RATIO` (default 0.10) — effective per-GPU VRAM is
   `gpu_memory * vram_margin * (1 - safety_margin)`. Auto-detected from
   `nvidia-smi` when not set.
-- `--max-batch-runtime SECONDS` (default 7200) - wall-clock budget per
+- `--max-batch-runtime SECONDS` (default 7200) — wall-clock budget per
   batch; influences how the scheduler packs tasks into batches.
-- `--task-timeout SECONDS` (default 7200) - hard timeout for any single
+- `--task-timeout SECONDS` (default 7200) — hard timeout for any single
   AF3 subprocess.
-- `--memory-estimation-factor FACTOR` (default 1.0) - multiplier applied
-  to the profile's VRAM estimate; raise to 1.1-1.2 if you observe OOMs
+- `--memory-estimation-factor FACTOR` (default 1.0) — multiplier applied
+  to the profile's VRAM estimate; raise to 1.1–1.2 if you observe OOMs
   near the VRAM ceiling.
 
 **Global concurrency cap (CPU-RAM-aware).** When many small-token tasks
@@ -273,7 +336,7 @@ disables linear interpolation between non-contiguous profile rows;
 `--strict-errors` aborts the run on the first task failure instead of
 isolating it for retry.
 
-### AF3_GPU_Memory_Profiler.py - peak VRAM profiler
+### AF3_GPU_Memory_Profiler.py — peak VRAM profiler
 
 ```bash
 python AF3_GPU_Memory_Profiler.py \
@@ -283,10 +346,10 @@ python AF3_GPU_Memory_Profiler.py \
     --interval 1.0
 ```
 
-### AF3__GPU_Memory_Time-Series_Profiler.py - time-series VRAM profiler
+### AF3_GPU_Memory_Time-Series_Profiler.py — time-series VRAM profiler
 
 ```bash
-python AF3__GPU_Memory_Time-Series_Profiler.py \
+python AF3_GPU_Memory_Time-Series_Profiler.py \
     --stat-file AF3_A800_80G_All_Len_stat.txt \
     --input-dir ./af_input \
     --output-dir ./timeseries_output \
@@ -296,7 +359,7 @@ python AF3__GPU_Memory_Time-Series_Profiler.py \
     --n-per-step 3 --workers 8
 ```
 
-### AF3_GPU_time_estimate.py - GPU runtime estimator
+### AF3_GPU_time_estimate.py — GPU runtime estimator
 
 ```bash
 python AF3_GPU_time_estimate.py \
@@ -307,7 +370,7 @@ python AF3_GPU_time_estimate.py \
 # stdout: total estimated serial runtime in seconds (machine-readable)
 ```
 
-### AF3_CPU_time_estimate.py - CPU/MSA runtime estimator
+### AF3_CPU_time_estimate.py — CPU/MSA runtime estimator
 
 ```bash
 python AF3_CPU_time_estimate.py \
@@ -321,7 +384,7 @@ The CPU profile is keyed on the longest protein chain length (MSA cost is
 driven by the largest protein passed to jackhmmer/hhblits), not by AF3
 token count.
 
-### AF3_JSON_Integrator.py - input JSON manipulation
+### AF3_JSON_Integrator.py — input JSON manipulation
 
 ```bash
 # Set a fixed seed list
@@ -344,7 +407,7 @@ Supported subcommands: `set-seeds`, `add-ligand`, `replace-ligand`,
 `AF3_JSON_Integrator.py --help` and the per-subcommand `--help` for full
 detail (CSV manifest format, name-field convention, etc.).
 
-### GPU_monitor.py - standalone GPU memory monitor
+### GPU_monitor.py — standalone GPU memory monitor
 
 ```bash
 # Sample all GPUs every 5 s, exit when ALL stay below 100 MiB for 5 minutes
@@ -359,7 +422,7 @@ python GPU_monitor.py -o gpu_log.tsv -g 0,2 -d 0
 ## Output formats
 
 All scripts log structured TSV. The main `AF3Parallel.py` per-task log
-includes:
+has the following columns (written as a single header row):
 
 ```
 gpu_id  batch_id  is_retry  batch_type  wave_id
@@ -382,12 +445,12 @@ useful even if the run is interrupted.
   whose boolean negations are written `--noFLAG` (no separator). Pass extra
   AF3 flags with `--af3-extra-args`, e.g. `--af3-extra-args --norun_data_pipeline`,
   or use the dedicated shortcut `--norun-data-pipeline`.
-  `AF3__GPU_Memory_Time-Series_Profiler.py` auto-corrects the most common
+  `AF3_GPU_Memory_Time-Series_Profiler.py` auto-corrects the most common
   wrong forms.
 - Run with `--test-only` first to dry-run the full pipeline up to (but not
   including) AF3 invocation. The summary prints the auto-detected GPU
   preset, the resolved global concurrency cap, the per-GPU task
-  distribution, and the planned batches / temporal waves - useful for
+  distribution, and the planned batches / temporal waves — useful for
   catching misconfigurations before committing to a long run.
 - If you launch on a GPU that doesn't match any built-in preset and you
   haven't set `--memory-profile`, the run continues with the detected
@@ -414,7 +477,7 @@ useful even if the run is interrupted.
 This project is released under the [MIT License](LICENSE).
 
 AlphaFold 3 itself is licensed separately by Google DeepMind and is **not**
-distributed by this repository - see the upstream project for details.
+distributed by this repository — see the upstream project for details.
 
 ---
 
