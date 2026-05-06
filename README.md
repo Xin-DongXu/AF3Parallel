@@ -120,7 +120,7 @@ to obtain the image, weights and databases.
 ## Installation
 
 ```bash
-git clone https://github.com/<you>/AF3Parallel.git
+git clone https://github.com/Xin-DongXu/AF3Parallel.git
 cd AF3Parallel
 pip install -r requirements.txt        # only the optional Python deps
 chmod +x *.py                          # optional, all scripts have shebangs
