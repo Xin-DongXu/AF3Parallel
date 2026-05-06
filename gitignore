@@ -1,0 +1,120 @@
+# -----------------------------------------------------------------------------
+#  Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Unit test / coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+htmlcov/
+
+# mypy / pyre / pytype
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# -----------------------------------------------------------------------------
+#  Editors / IDEs
+# -----------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# -----------------------------------------------------------------------------
+#  OS clutter
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------------------------------------------------------------
+#  AlphaFold 3 specific (heavy artefacts that should never be committed)
+# -----------------------------------------------------------------------------
+
+# Singularity images (multi-GB)
+*.sif
+
+# AF3 model weights (multi-GB)
+models/
+model_dir/
+
+# AF3 reference databases (hundreds of GB)
+af3_DB/
+af3_db/
+public_databases/
+
+# AF3 input / output staging
+af_input/
+af_output/
+af_output_parallel/
+
+# AF3Parallel.py per-GPU working directories
+gpu_work/
+gpu_*_work/
+
+# -----------------------------------------------------------------------------
+#  Run outputs (TSV logs, profile dumps, monitor logs)
+#
+#  Comment these out if you want to commit example outputs.
+# -----------------------------------------------------------------------------
+*.log
+*.tmp
+
+# Common output filenames written by these tools
+results.tsv
+breakdown.tsv
+estimate_breakdown.tsv
+msa_breakdown.tsv
+gpu_log.tsv
+profile.tsv
+my_gpu_profile.tsv
+timeseries_output/

@@ -1,0 +1,19 @@
+# All scripts in this repository are written against the Python standard
+# library only. The packages below are OPTIONAL and only enable secondary
+# convenience features; the scripts run correctly without them.
+#
+#   psutil   - used by AF3Parallel.py to derive an automatic
+#              --max-concurrent-tasks cap from total system RAM. Without it
+#              the auto-cap is silently skipped and you can still set the
+#              cap manually with --max-concurrent-tasks N.
+#
+#   rdkit    - when importable, gives the most accurate ligand heavy-atom
+#              counts for SMILES strings (used by AF3Parallel.py and
+#              AF3_GPU_time_estimate.py). A built-in regex tokenizer is
+#              used as a fallback if rdkit is not available.
+#
+# To install the optional extras:
+#     pip install -r requirements.txt
+
+psutil>=5.9
+rdkit>=2022.9
