@@ -38,7 +38,7 @@ the model weights. The cloned `alphafold3/` directory then becomes the
 working directory into which the AF3Parallel scripts are copied (see
 the *Installation* section below).
 
-The four components you need to assemble are summarised below; for
+The five items you need to assemble are summarised below; for
 authoritative, up-to-date instructions follow the
 [official installation guide](https://github.com/google-deepmind/alphafold3/blob/v3.0.1/docs/installation.md).
 
@@ -47,7 +47,7 @@ authoritative, up-to-date instructions follow the
 | AF3 source tree   | The repository at tag `v3.0.1` (provides `docker/`, `src/alphafold3/`, `run_alphafold.py`, `fetch_databases.sh`) | `./alphafold3/` (working directory) |
 | Singularity image | `alphafold3.sif` built from `docker/Dockerfile`                                                                  | `./alphafold3/alphafold3.sif`       |
 | Model weights     | `af3.bin` (or `af3.bin.zst`) — request access from Google DeepMind                                               | `./alphafold3/models/`              |
-| Genetic databases | ~252 GB compressed / ~628 GB unpacked, fetched by `fetch_databases.sh`                                           | **outside** the AF3 repo (see note) |
+| Genetic databases | ~252 GB compressed / ~628 GB unpacked, fetched by `fetch_databases.sh`                                           | **outside** the AF3 repo (see *Installation* layout) |
 | `nvidia-smi`      | Ships with the NVIDIA driver; verify with `nvidia-smi`                                                           | in `PATH`                           |
 
 > **Verify your AF3 setup before installing AF3Parallel.** From inside
@@ -505,26 +505,202 @@ token count.
 
 ### AF3_JSON_Integrator.py — input JSON manipulation
 
+A programmatic, protein-preserving editor for AlphaFold 3 input JSON files
+(the [`alphafold3` dialect](https://github.com/google-deepmind/alphafold3/blob/main/docs/input.md)).
+It is designed for **screening workflows** in which a single
+protein-of-interest is repeatedly evaluated against many different ligands,
+nucleic-acid partners, metal ions, or random seeds — without ever touching
+the protein chains themselves.
+
+> The legacy `alphafoldserver` dialect (top-level JSON list) is *not*
+> supported. Inputs must be the alphafold3-dialect dict-form JSON.
+
+#### Subcommands
+
+| Subcommand        | Effect                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `set-seeds`       | Modify only `modelSeeds`; everything else (including the `name` field) stays byte-identical.                        |
+| `add-ligand`      | Append a new small-molecule ligand entry (SMILES *or* one-or-more CCD codes for multi-component ligands).            |
+| `replace-ligand`  | Replace an existing small-molecule ligand identified by chain ID.                                                    |
+| `add-nucleic`     | Append a new RNA or DNA chain.                                                                                       |
+| `replace-nucleic` | Replace an existing RNA/DNA chain identified by chain ID.                                                            |
+| `add-ion`         | Append a metal ion (CCD code only, e.g. `MG`, `ZN`; per AF3 spec ions are simply ligands with single-element codes). |
+| `replace-ion`     | Replace an existing metal ion identified by chain ID.                                                                |
+
+#### Three I/O modes
+
+Every operation supports the same three modes (with one exception noted below):
+
+| Mode        | Required flags                                  | When to use                                                       |
+| ----------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| **Single**  | `-i FILE -o FILE`                               | One input → one output. Quick edits, scripting.                   |
+| **Bulk**    | `--input-dir DIR --output-dir DIR`              | Apply the *same* operation to every `*.json` in a directory.      |
+| **Fan-out** | `-i FILE --from-csv CSV --output-dir DIR`       | One base JSON → many outputs, one per CSV row (parameter sweeps). |
+
+`set-seeds` does not support Fan-out mode (use Single or Bulk instead).
+
+In **Bulk** and **Fan-out** modes the script runs tasks in parallel via
+`--workers N` (default: `min(8, os.cpu_count())`). Failed tasks are logged
+but never abort the whole run; the final stderr summary lists success /
+failure counts plus the first few error messages. The exit code is `0`
+on full success, `2` if at least one task failed, and `1` for argument
+errors.
+
+#### `--in-place` mode
+
+A space-saving alternative to writing copies into `--output-dir`. It is
+particularly useful when the JSONs are large (e.g. contain pre-computed
+MSAs). It works with `-i FILE` and with `--input-dir DIR`, but is **not**
+compatible with `-o`, `--output-dir`, or `--from-csv`. The on-disk filename
+is preserved; the internal `name` field is still updated normally per the
+operation. Writes are atomic (temp-file + rename) so the original file is
+never corrupted on validation errors, disk-full conditions, or process
+interruption.
+
+#### `name` field convention
+
+The `name` field is treated as `<protein_prefix>_<ligand_tag>`, split on the
+**first** underscore. Therefore:
+
+- The protein-ID prefix should not itself contain underscores.
+- `set-seeds` is name-stable (does not modify `name`).
+- Every other operation rewrites only the `<ligand_tag>` suffix; the
+  protein-ID prefix is preserved verbatim.
+- In **Bulk** and **Fan-out** modes the on-disk output filename is derived
+  from the resulting `name` field (`<name>.json`). Filename collisions
+  abort the run before writing anything to disk, so a sweep that would
+  silently overwrite outputs is detected up front.
+
+#### Invariants enforced by every operation
+
+1. Protein chains are never modified — every transformed JSON is
+   deep-compared against the input for protein-entry equality.
+2. The protein-ID prefix in `name` is preserved verbatim.
+3. `set-seeds` is name-stable.
+4. Chain IDs are kept unique across the entire `sequences` list.
+5. Output-filename collisions in Bulk / Fan-out modes abort the run before
+   any write to disk.
+
+#### CSV manifest format (Fan-out mode)
+
+The CSV must have a header row. Required and optional columns depend on
+the operation. In Fan-out mode the per-task parameters come from the CSV,
+so the corresponding CLI flags (`--smiles`, `--ccd`, `--sequence`,
+`--ligand-tag`, `--target-id`, `--copies`, `--chain-id`, ...) are
+**rejected** to prevent silent overrides — the integrator fails fast with
+a clear error if you mix them.
+
+| Operation                          | Required columns                                  | Optional columns                                  |
+| ---------------------------------- | ------------------------------------------------- | ------------------------------------------------- |
+| `add-ligand` / `replace-ligand`    | `ligand_tag`, one of `smiles` or `ccd`; `target_id` (replace only) | `copies` (default 1, add only), `chain_id` (add only) |
+| `add-nucleic` / `replace-nucleic`  | `ligand_tag`, `type` (`rna` or `dna`), `sequence`; `target_id` (replace only) | `copies` (default 1, add only), `chain_id` (add only) |
+| `add-ion` / `replace-ion`          | `ligand_tag`, `ccd` (single ion code, e.g. `MG`, `ZN`); `target_id` (replace only) | `copies` (default 1, add only), `chain_id` (add only) |
+
+The `ccd` column for `add-ligand` / `replace-ligand` accepts a
+**comma-separated** list to define a multi-component ligand
+(e.g. `ATP,MG`).
+
+#### Examples
+
+**1. `set-seeds` — fix or randomise the seed list**
+
 ```bash
-# Set a fixed seed list
+# Replace seeds with an explicit list (single-file)
 python AF3_JSON_Integrator.py set-seeds \
     -i input.json -o output.json --seeds 1 2 3
 
-# Add a ligand to every JSON in a directory (parallel)
-python AF3_JSON_Integrator.py add-ligand \
-    --input-dir ./inputs --output-dir ./outputs \
-    --smiles "CC(=O)Nc1ccc(O)cc1" --copies 1 \
-    --workers 8
+# Generate 5 consecutive seeds starting at 1000
+python AF3_JSON_Integrator.py set-seeds \
+    -i input.json -o output.json --num-seeds 5 --seed-base 1000
 
-# Fan-out from one base JSON, one output per CSV row
-python AF3_JSON_Integrator.py replace-ligand \
-    -i base.json --from-csv ligands.csv --output-dir ./outputs
+# Generate 5 random seeds reproducibly across an entire directory, in place
+python AF3_JSON_Integrator.py set-seeds \
+    --input-dir ./inputs --in-place \
+    --num-seeds 5 --rng-seed 42 --workers 8
 ```
 
-Supported subcommands: `set-seeds`, `add-ligand`, `replace-ligand`,
-`add-nucleic`, `replace-nucleic`, `add-ion`, `replace-ion`. See
-`AF3_JSON_Integrator.py --help` and the per-subcommand `--help` for full
-detail (CSV manifest format, name-field convention, etc.).
+**2. `add-ligand` — append a ligand to every JSON in a directory**
+
+```bash
+# Add paracetamol (SMILES) to every JSON in ./inputs, in parallel
+python AF3_JSON_Integrator.py add-ligand \
+    --input-dir ./inputs --output-dir ./outputs \
+    --smiles "CC(=O)Nc1ccc(O)cc1" \
+    --ligand-tag paracetamol \
+    --copies 1 --workers 8
+
+# Add a multi-component CCD ligand (ATP coordinated with Mg)
+python AF3_JSON_Integrator.py add-ligand \
+    -i base.json -o base_with_ATP_MG.json \
+    --ccd ATP MG --ligand-tag ATP_MG
+```
+
+**3. `replace-ligand` — fan-out screen across many candidates**
+
+A typical CSV (`ligands.csv`) for a SMILES screen:
+
+```csv
+ligand_tag,target_id,smiles
+cmpd001,L,CC(=O)Nc1ccc(O)cc1
+cmpd002,L,O=C(O)c1ccccc1O
+cmpd003,L,CN1C=NC2=C1C(=O)N(C(=O)N2C)C
+```
+
+Run the screen — one output JSON per row, named after `<protein_prefix>_<ligand_tag>.json`:
+
+```bash
+python AF3_JSON_Integrator.py replace-ligand \
+    -i base.json --from-csv ligands.csv \
+    --output-dir ./outputs --workers 16
+```
+
+**4. `add-nucleic` / `replace-nucleic` — RNA or DNA partners**
+
+```bash
+# Add a single-stranded RNA hairpin to one base JSON
+python AF3_JSON_Integrator.py add-nucleic \
+    -i base.json -o base_with_RNA.json \
+    --type rna --sequence GGGAAACCC \
+    --ligand-tag hairpin
+
+# Replace whatever RNA is on chain B with a new sequence (bulk, in place)
+python AF3_JSON_Integrator.py replace-nucleic \
+    --input-dir ./inputs --in-place \
+    --target-id B --type rna --sequence AUGCAUGCAU \
+    --ligand-tag rna_v2 --workers 8
+```
+
+**5. `add-ion` / `replace-ion` — metal ions**
+
+```bash
+# Add 2 Mg2+ ions to a base JSON
+python AF3_JSON_Integrator.py add-ion \
+    -i base.json -o base_with_2MG.json \
+    --ccd MG --copies 2 --ligand-tag 2MG
+
+# Swap the existing ion on chain C for Zn2+
+python AF3_JSON_Integrator.py replace-ion \
+    -i base.json -o base_ZN.json \
+    --target-id C --ccd ZN --ligand-tag ZN
+```
+
+#### Common flags
+
+| Flag                       | Applies to                | Description                                                                            |
+| -------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
+| `-i, --input FILE`         | all                       | Input JSON file (Single-file or Fan-out mode).                                         |
+| `--input-dir DIR`          | all                       | Input directory of `*.json` files (Bulk mode).                                         |
+| `-o, --output FILE`        | all                       | Output JSON file (Single-file mode only).                                              |
+| `--output-dir DIR`         | all                       | Output directory (Bulk or Fan-out mode).                                               |
+| `--in-place`               | all                       | Edit input files in place; incompatible with `-o`, `--output-dir`, `--from-csv`.       |
+| `--from-csv CSV`           | all except `set-seeds`    | CSV manifest for Fan-out mode.                                                          |
+| `--ligand-tag STR`         | all add/replace ops       | Suffix written into the `name` field; required in Single and Bulk, ignored in Fan-out. |
+| `--workers N`              | all                       | Parallel worker processes (default: `min(8, os.cpu_count())`).                          |
+| `--quiet`                  | all                       | Suppress progress / summary on stderr.                                                  |
+| `--version`                | top-level                 | Print version and exit.                                                                 |
+
+For the full per-subcommand option list, see
+`python AF3_JSON_Integrator.py <subcommand> --help`.
 
 ### GPU_monitor.py — standalone GPU memory monitor
 
