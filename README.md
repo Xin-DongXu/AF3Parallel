@@ -50,47 +50,6 @@ authoritative, up-to-date instructions follow the
 | Genetic databases | ~252 GB compressed / ~628 GB unpacked, fetched by `fetch_databases.sh`                                           | **outside** the AF3 repo (see note) |
 | `nvidia-smi`      | Ships with the NVIDIA driver; verify with `nvidia-smi`                                                           | in `PATH`                           |
 
-> ⚠️ **Database location matters.** The official guide explicitly warns
-> that the database directory **must not** be a subdirectory of the AF3
-> repository — if it is, every subsequent `docker build` will be slow
-> because the multi-hundred-GB database will be copied into the build
-> context. Put it on a fast SSD next to (not inside) the repository,
-> e.g. `~/af3_DB/`, and pass that absolute path to AF3Parallel via
-> `--af3-db`.
-
-A typical end-to-end bring-up:
-
-```bash
-# ---------- 1. Clone the AF3 repository at tag v3.0.1 ----------
-git clone --branch v3.0.1 --depth 1 \
-    https://github.com/google-deepmind/alphafold3.git
-cd alphafold3                            # this becomes the working directory
-
-# ---------- 2. Build the Docker image, then convert to a Singularity .sif ----------
-# (Follow docs/installation.md inside the cloned tree if you hit issues
-#  on AlmaLinux/Rocky/RHEL — those need an extra `--ulimit nofile=65535:65535`.)
-docker build -t alphafold3 -f docker/Dockerfile .
-
-# Two equivalent ways to produce the .sif from the locally-built Docker image:
-#   (a) directly from the Docker daemon (simplest, requires root)
-sudo singularity build alphafold3.sif docker-daemon://alphafold3:latest
-#   (b) via an intermediate tarball (works without a running daemon at build time)
-# docker save alphafold3:latest -o alphafold3.tar
-# sudo singularity build alphafold3.sif docker-archive://alphafold3.tar
-
-# Quick smoke test: the image should see your GPU.
-singularity exec --nv alphafold3.sif sh -c 'nvidia-smi'
-
-# ---------- 3. Fetch the genetic databases OUTSIDE the repo ----------
-# Default target is $HOME/public_databases if you omit the argument.
-./fetch_databases.sh ~/af3_DB            # ~252 GB download, ~628 GB on disk
-
-# ---------- 4. Place the model weights inside the repo ----------
-# Request access at https://github.com/google-deepmind/alphafold3 first.
-mkdir -p models
-mv /path/to/af3.bin.zst ./models/        # or af3.bin (uncompressed)
-```
-
 > **Verify your AF3 setup before installing AF3Parallel.** From inside
 > the cloned `alphafold3/` directory, run a single-job prediction with a
 > plain `singularity exec` and your own `fold_input.json`:
