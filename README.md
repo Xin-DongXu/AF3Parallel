@@ -30,28 +30,76 @@ batch in parallel across all available GPUs with VRAM-aware scheduling.
 
 ### 1. AlphaFold 3 (v3.0.1) — required first
 
-**These scripts are wrappers around AlphaFold 3. You must complete the
-official AF3 setup before using any script in this repository.**
+**These scripts are wrappers around AlphaFold 3 and live alongside the
+official source tree.** Before installing AF3Parallel, clone the
+AlphaFold 3 repository at tag `v3.0.1`, build a Singularity image from
+the bundled `docker/Dockerfile`, fetch the genetic databases, and place
+the model weights. The cloned `alphafold3/` directory then becomes the
+working directory into which the AF3Parallel scripts are copied (see
+the *Installation* section below).
 
-Follow the [AlphaFold 3 installation guide](https://github.com/google-deepmind/alphafold3/blob/main/docs/installation.md)
-to obtain and verify the following four components:
+The four components you need to assemble are summarised below; for
+authoritative, up-to-date instructions follow the
+[official installation guide](https://github.com/google-deepmind/alphafold3/blob/v3.0.1/docs/installation.md).
 
-| Component | What it is | Typical path used below |
-| --- | --- | --- |
-| Singularity image | `alphafold3.sif` built from the official Dockerfile | `./alphafold3.sif` |
-| Model weights | `af3.bin` (or `af3.bin.zst`) — request access from Google DeepMind | `./models/` |
-| Genetic databases | ~394 GB of sequence databases + ~234 GB PDB mmCIF | `./af3_DB/` |
-| `nvidia-smi` | Ships with the NVIDIA driver; verify with `nvidia-smi` | in `PATH` |
+| Component         | What it is                                                                                                       | Path convention used in this README |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| AF3 source tree   | The repository at tag `v3.0.1` (provides `docker/`, `src/alphafold3/`, `run_alphafold.py`, `fetch_databases.sh`) | `./alphafold3/` (working directory) |
+| Singularity image | `alphafold3.sif` built from `docker/Dockerfile`                                                                  | `./alphafold3/alphafold3.sif`       |
+| Model weights     | `af3.bin` (or `af3.bin.zst`) — request access from Google DeepMind                                               | `./alphafold3/models/`              |
+| Genetic databases | ~252 GB compressed / ~628 GB unpacked, fetched by `fetch_databases.sh`                                           | **outside** the AF3 repo (see note) |
+| `nvidia-smi`      | Ships with the NVIDIA driver; verify with `nvidia-smi`                                                           | in `PATH`                           |
 
-> **Verify your AF3 setup first.** Before installing AF3Parallel, confirm
-> that a plain `singularity exec` command can run a single-job prediction
-> end-to-end:
+> ⚠️ **Database location matters.** The official guide explicitly warns
+> that the database directory **must not** be a subdirectory of the AF3
+> repository — if it is, every subsequent `docker build` will be slow
+> because the multi-hundred-GB database will be copied into the build
+> context. Put it on a fast SSD next to (not inside) the repository,
+> e.g. `~/af3_DB/`, and pass that absolute path to AF3Parallel via
+> `--af3-db`.
+
+A typical end-to-end bring-up:
+
+```bash
+# ---------- 1. Clone the AF3 repository at tag v3.0.1 ----------
+git clone --branch v3.0.1 --depth 1 \
+    https://github.com/google-deepmind/alphafold3.git
+cd alphafold3                            # this becomes the working directory
+
+# ---------- 2. Build the Docker image, then convert to a Singularity .sif ----------
+# (Follow docs/installation.md inside the cloned tree if you hit issues
+#  on AlmaLinux/Rocky/RHEL — those need an extra `--ulimit nofile=65535:65535`.)
+docker build -t alphafold3 -f docker/Dockerfile .
+
+# Two equivalent ways to produce the .sif from the locally-built Docker image:
+#   (a) directly from the Docker daemon (simplest, requires root)
+sudo singularity build alphafold3.sif docker-daemon://alphafold3:latest
+#   (b) via an intermediate tarball (works without a running daemon at build time)
+# docker save alphafold3:latest -o alphafold3.tar
+# sudo singularity build alphafold3.sif docker-archive://alphafold3.tar
+
+# Quick smoke test: the image should see your GPU.
+singularity exec --nv alphafold3.sif sh -c 'nvidia-smi'
+
+# ---------- 3. Fetch the genetic databases OUTSIDE the repo ----------
+# Default target is $HOME/public_databases if you omit the argument.
+./fetch_databases.sh ~/af3_DB            # ~252 GB download, ~628 GB on disk
+
+# ---------- 4. Place the model weights inside the repo ----------
+# Request access at https://github.com/google-deepmind/alphafold3 first.
+mkdir -p models
+mv /path/to/af3.bin.zst ./models/        # or af3.bin (uncompressed)
+```
+
+> **Verify your AF3 setup before installing AF3Parallel.** From inside
+> the cloned `alphafold3/` directory, run a single-job prediction with a
+> plain `singularity exec` and your own `fold_input.json`:
 > ```bash
 > singularity exec --nv \
 >     --bind $HOME/af_input:/root/af_input \
 >     --bind $HOME/af_output:/root/af_output \
 >     --bind ./models:/root/models \
->     --bind ./af3_DB:/root/public_databases \
+>     --bind ~/af3_DB:/root/public_databases \
 >     alphafold3.sif \
 >     python /app/alphafold/run_alphafold.py \
 >         --json_path=/root/af_input/fold_input.json \
@@ -59,7 +107,7 @@ to obtain and verify the following four components:
 >         --db_dir=/root/public_databases \
 >         --output_dir=/root/af_output
 > ```
-> If this command succeeds, your environment is ready for AF3Parallel.
+> If this finishes without error, your environment is ready for AF3Parallel.
 
 **Hardware requirements (from the AF3 installation guide):**
 - Linux (Ubuntu 22.04 LTS recommended)
@@ -82,40 +130,82 @@ to obtain and verify the following four components:
 
 ## Installation
 
+> Before you start, make sure the four AF3 components from the
+> *Prerequisites* section are in place:
+> 1. The `alphafold3/` repository is cloned at tag `v3.0.1`.
+> 2. `alphafold3/alphafold3.sif` exists and `singularity exec --nv alphafold3.sif sh -c 'nvidia-smi'` works.
+> 3. `alphafold3/models/` contains `af3.bin` (or `af3.bin.zst`).
+> 4. The genetic databases are downloaded **outside** the repository, e.g. at `~/af3_DB/`.
+
 ```bash
-# Step 1 — complete the AlphaFold 3 v3.0.1 setup (see above)
+# Step 1 — change into the cloned AF3 working directory
+cd /path/to/alphafold3
 
-# Step 2 — clone this repository into the same working directory
-git clone https://github.com/Xin-DongXu/AF3Parallel.git
-cd AF3Parallel
+# Step 2 — clone AF3Parallel anywhere and copy its scripts into ./alphafold3/
+#         so they sit next to AF3's own run_alphafold.py
+git clone https://github.com/Xin-DongXu/AF3Parallel.git /tmp/AF3Parallel
+cp /tmp/AF3Parallel/*.py            .
+cp /tmp/AF3Parallel/requirements.txt .       # optional dependencies
 
-# Step 3 — install optional Python dependencies
+# Step 3 — install the optional Python dependencies (psutil, rdkit)
 pip install -r requirements.txt
 
 # Step 4 — (optional) make scripts directly executable
-chmod +x *.py
+chmod +x AF3Parallel.py AF3_*.py GPU_monitor.py
 ```
 
-Your working directory should look similar to:
+> Do **not** copy this repository's `README.md` or `LICENSE` into the
+> AF3 tree — they would overwrite AF3's own files. Only the `*.py`
+> scripts (and, optionally, `requirements.txt`) need to be copied in.
+
+After Step 2, the on-disk layout looks like this. Items marked **[AF3]**
+ship with the official AlphaFold 3 repository at `v3.0.1`; **[you]**
+items are produced or placed by you during AF3 setup; **[this repo]**
+items are the AF3Parallel scripts you just copied in.
 
 ```
-/your/working/directory/
-├── alphafold3.sif          # AlphaFold 3 Singularity image
-├── models/                 # AF3 model weights (af3.bin or af3.bin.zst)
-├── af3_DB/                 # AF3 genetic databases (~628 GB)
-├── af_input/               # your AF3 input JSON files
-├── AF3Parallel.py          # ← scripts from this repository
-├── AF3_GPU_Memory_Profiler.py
-├── AF3_GPU_Memory_Time-Series_Profiler.py
-├── AF3_GPU_time_estimate.py
-├── AF3_CPU_time_estimate.py
-├── AF3_JSON_Integrator.py
-└── GPU_monitor.py
+~/                                                ← anywhere on disk
+├── af3_DB/                                       # [you] genetic databases (~628 GB), kept OUTSIDE
+│   ├── bfd-first_non_consensus_sequences.fasta   #       the AF3 repo per the official guide
+│   ├── mgy_clusters_2022_05.fa
+│   ├── pdb_2022_09_28_mmcif_files/
+│   ├── uniref90_2022_05.fa
+│   └── ...                                       #       (full list created by fetch_databases.sh)
+│
+└── alphafold3/                                   # ← cloned AF3 v3.0.1 = AF3Parallel working directory
+    ├── docker/                                   # [AF3] Dockerfile + container helpers
+    │   └── Dockerfile
+    ├── docs/                                     # [AF3] official AF3 documentation
+    ├── src/                                      # [AF3] AlphaFold 3 Python package source
+    │   └── alphafold3/                           #       (model, data pipeline, scripts/, ...)
+    ├── run_alphafold.py                          # [AF3] AF3 inference entry point
+    ├── fetch_databases.sh                        # [AF3] genetic-database downloader
+    ├── pyproject.toml                            # [AF3] AF3 package metadata
+    ├── README.md                                 # [AF3] AF3's own README — do NOT overwrite
+    ├── LICENSE                                   # [AF3] CC BY-NC-SA 4.0
+    ├── WEIGHTS_TERMS_OF_USE.md                   # [AF3] terms governing model weights
+    │
+    ├── alphafold3.sif                            # [you] Singularity image built from docker/Dockerfile
+    ├── models/                                   # [you] AF3 model weights
+    │   └── af3.bin.zst
+    ├── af_input/                                 # [you] your AF3 input JSON files
+    │
+    ├── AF3Parallel.py                            # [this repo] multi-GPU executor
+    ├── AF3_GPU_Memory_Profiler.py                # [this repo] peak-VRAM profiler
+    ├── AF3_GPU_Memory_Time-Series_Profiler.py    # [this repo] time-series VRAM profiler
+    ├── AF3_GPU_time_estimate.py                  # [this repo] GPU runtime estimator
+    ├── AF3_CPU_time_estimate.py                  # [this repo] CPU/MSA runtime estimator
+    ├── AF3_JSON_Integrator.py                    # [this repo] input-JSON manipulator
+    ├── GPU_monitor.py                            # [this repo] standalone GPU memory monitor
+    └── requirements.txt                          # [this repo] optional Python deps (psutil, rdkit)
 ```
 
-The Python scripts are self-contained — there is no package to install. You
-can invoke them with `python script.py ...` or, after `chmod +x`, run them
-directly.
+The Python scripts are self-contained — there is no package to install.
+Invoke them with `python script.py ...` or, after `chmod +x`, run them
+directly. Every command shown later in this README assumes you run it
+from inside the `alphafold3/` working directory and uses `~/af3_DB` as
+the database path; substitute the actual location you passed to
+`fetch_databases.sh` if it differs.
 
 ---
 
@@ -157,7 +247,7 @@ A typical end-to-end run:
        -i ./profile_inputs \
        -o my_gpu_profile.tsv \
        --sif alphafold3.sif \
-       --af3-db ./af3_DB \
+       --af3-db ~/af3_DB \
        --models ./models
    ```
    > `AF3_GPU_Memory_Profiler.py` monitors GPU 0 by default. To profile a
@@ -180,7 +270,7 @@ A typical end-to-end run:
        -o  results.tsv \
        --output-dir ./af_output \
        --sif alphafold3.sif \
-       --af3-db ./af3_DB \
+       --af3-db ~/af3_DB \
        --models ./models \
        --gpus 0,1,2,3 \
        --memory-profile my_gpu_profile.tsv
@@ -214,7 +304,7 @@ resulting TSV via `--memory-profile`:
 python AF3_GPU_Memory_Profiler.py \
     -i ./profile_inputs -o my_gpu_profile.tsv \
     --sif alphafold3.sif \
-    --af3-db ./af3_DB --models ./models
+    --af3-db ~/af3_DB --models ./models
 
 python AF3Parallel.py ... --memory-profile my_gpu_profile.tsv
 ```
@@ -256,7 +346,7 @@ python AF3Parallel.py \
     -i ./af_input -o results.tsv \
     --output-dir ./af_output \
     --sif alphafold3.sif \
-    --af3-db ./af3_DB --models ./models \
+    --af3-db ~/af3_DB --models ./models \
     --gpus 0,1,2,3 \
     --memory-profile my_gpu_profile.tsv
 
@@ -334,13 +424,85 @@ disables linear interpolation between non-contiguous profile rows;
 `--strict-errors` aborts the run on the first task failure instead of
 isolating it for retry.
 
+#### Full option reference
+
+The tables below list every option exposed by `python AF3Parallel.py
+--help`, grouped exactly as `argparse` groups them. *Type* uses Python
+conventions; *required* options have no default. Boolean flags are
+shown with the `store_true` toggle they actually map to.
+
+**Input/Output Options**
+
+| Option | Type / metavar | Default | Description |
+| --- | --- | --- | --- |
+| `-i, --input-dir DIR` | `Path` | *(required)* | Directory containing AF3 input JSON files. Every `*.json` inside is treated as one prediction job. |
+| `-o, --output-file FILE` | `Path` | *(required)* | TSV log written incrementally as tasks finish (one row per task; columns documented under *Output formats*). |
+| `--output-dir DIR` | `str` | `./af_output_parallel` | Where AF3 writes its per-job result folders. Always set this explicitly to avoid mixing outputs across runs. |
+| `--no-skip-existing` | flag | off (skip is enabled) | Re-run jobs even if their output directory already exists. By default jobs whose output dir is present are skipped. |
+| `--skip-vram-overflow` | flag | off | Drop jobs whose predicted VRAM footprint exceeds the GPU's effective budget *instead of* letting them spill into CPU memory. |
+| `--max-tokens N` | `int` | `None` | Hard upper bound on token count: any job above this is dropped before scheduling. Useful for excluding huge inputs from a batch. |
+| `--temp-dir DIR` | `str` | `<input-dir>/gpu_work/` | Workspace where staged JSONs and per-task scratch live. Override if your input directory is read-only or on a slow filesystem. |
+
+**AlphaFold3 Configuration**
+
+| Option | Type / metavar | Default | Description |
+| --- | --- | --- | --- |
+| `--sif, --singularity-image FILE` | `str` | *(required)* | Path to the `alphafold3.sif` Singularity image built from `docker/Dockerfile`. |
+| `--af3-db DIR` | `str` | `./af3_DB` | Path to the genetic-database directory created by `fetch_databases.sh`. Use an absolute path (e.g. `~/af3_DB`) since the databases live outside the AF3 repo. |
+| `--models DIR` | `str` | `./models` | Path to the directory containing `af3.bin` (or `af3.bin.zst`). |
+| `--norun-data-pipeline` | flag | off | Shortcut for AF3's `--norun_data_pipeline` flag. Skips the CPU-bound MSA/template stage; assumes inputs already contain MSAs. |
+| `--af3-extra-args ARG [ARG ...]` | `str*` | `[]` | Extra arguments passed straight to `run_alphafold.py`. Use Abseil-style booleans (`--noFLAG`, no separator). Example: `--af3-extra-args --num_recycles=5 --save_distogram`. |
+
+**GPU Configuration**
+
+| Option | Type / metavar | Default | Description |
+| --- | --- | --- | --- |
+| `--gpus LIST` | `str` | all visible GPUs | Comma-separated GPU indices to use (e.g. `0,1,2,3`). Equivalent to setting `CUDA_VISIBLE_DEVICES` for the executor itself. |
+| `--gpu-preset PRESET` | `str` | auto-detect | Selects a built-in profile and matching VRAM. Valid keys: `a800-80g`, `a100-80g`, `a100-40g`, `h100-80g`, `h100-94g`, `a6000-48g`, `v100-32g`, `rtx4090`, `rtx3090`, `rtx3090ti`, `rtx4080`. Only `a800-80g` and `rtx4090` are *measured*; the rest are extrapolations — see *Built-in GPU profiles* above. |
+| `--gpu-memory MB` | `int` | `81920` (= 80 GB) | Per-GPU VRAM ceiling in MB. Auto-detected from `nvidia-smi` when not set; overridden by `--gpu-preset`. |
+| `--vram-margin RATIO` | `float` in `[0.5, 1.0]` | `0.95` | Fraction of physical VRAM the executor is allowed to budget against (leaves headroom for CUDA overhead and fragmentation). |
+| `--safety-margin RATIO` | `float` in `[0.0, 0.5]` | `0.10` | Additional shrink factor applied on top of `--vram-margin`. Effective per-GPU budget = `gpu_memory * vram_margin * (1 - safety_margin)`. |
+| `--max-workers N` | `int` | unlimited | Per-batch concurrency cap on a *single* GPU (bounds how many tasks share one GPU within one batch). |
+| `--max-concurrent-tasks N` | `int` | auto from CPU RAM | **Global** cap on concurrent AF3 subprocesses across all GPUs. Prevents CPU RAM/swap exhaustion when many small-token tasks fit in VRAM but collectively overflow system memory. Auto-derived from `psutil` if installed: `max(1, (total_ram_mb - cpu_memory_reserve_mb) // cpu_memory_per_task_mb)`. |
+| `--cpu-memory-per-task-mb MB` | `int` | `4500` | Estimated CPU RAM per AF3 subprocess; used only for the auto-derivation above. The default matches observed RES on A800 nodes. |
+| `--cpu-memory-reserve-mb MB` | `int` | `8192` | CPU RAM reserved for the OS, the parent Python process, `nvidia-smi`, etc.; subtracted from total RAM in the auto-derivation. |
+| `--no-cpu-memory-autocap` | flag | off | Disable the auto-derivation entirely. Concurrency is then bounded only by per-GPU VRAM (and `--max-workers` if set). |
+| `--max-batch-runtime SECONDS` | `float` ≥ 60 | `7200.0` | Wall-clock budget per batch; influences how the scheduler packs tasks. |
+| `--task-timeout SECONDS` | `int` ≥ 60 | `7200` | Hard timeout for any single AF3 subprocess. |
+
+**Temporal Wave Scheduling**
+
+| Option | Type / metavar | Default | Description |
+| --- | --- | --- | --- |
+| `--no-temporal-waves` | flag | off (waves enabled) | Disable temporal-wave scheduling and fall back to plain VRAM-packed batches. |
+| `--min-anchor-ratio RATIO` | `float` ≥ 1.1 | `2.0` | Minimum runtime ratio between an anchor and its candidate wave tasks. Larger values pick longer anchors and admit only much shorter tasks into their VRAM shadow. |
+| `--max-anchor-group-ratio RATIO` | `float` | `1.5` | Limits how heterogeneous a group of anchors on the same GPU may be (longest anchor runtime ÷ shortest). |
+
+**Memory Profiling Options**
+
+| Option | Type / metavar | Default | Description |
+| --- | --- | --- | --- |
+| `--memory-profile FILE` | `Path` | built-in profile for the detected/preset GPU | Custom TSV produced by `AF3_GPU_Memory_Profiler.py`. Required for any GPU model not listed in `--gpu-preset`. |
+| `--no-profile-gap-fill` | flag | off | Disable linear interpolation between non-contiguous rows in the profile. With this on, gaps in the profile cause hard failures rather than estimates. |
+| `--memory-estimation-factor FACTOR` | `float` in `[0.5, 5.0]` | `1.0` | Multiplier applied to the profile's VRAM estimate. Raise to `1.1`–`1.2` if you observe OOMs near the VRAM ceiling. |
+
+**Monitoring & Debug Options**
+
+| Option | Type / metavar | Default | Description |
+| --- | --- | --- | --- |
+| `--monitor-interval SECONDS` | `int` | `5` | Polling interval for the in-process GPU memory monitor (separate from `GPU_monitor.py`). |
+| `--cpu-workers N` | `int` | auto (CPU count) | Number of parallel workers used for the JSON-parsing / token-counting pre-pass. |
+| `-v, --verbose` | flag | off | Print extra diagnostic output (per-task timing breakdown, scheduling decisions). |
+| `--strict-errors` | flag | off | Abort the entire run on the first task failure instead of isolating it for retry. |
+| `--test-only` | flag | off | Dry-run mode: validate config, load profiles, plan batches/waves, and print the schedule — but do not invoke AF3. Recommended before any large run. |
+
 ### AF3_GPU_Memory_Profiler.py — peak VRAM profiler
 
 ```bash
 python AF3_GPU_Memory_Profiler.py \
     -i ./profile_inputs -o profile.tsv \
     --sif alphafold3.sif \
-    --af3-db ./af3_DB --models ./models \
+    --af3-db ~/af3_DB --models ./models \
     --interval 1.0
 ```
 
@@ -352,7 +514,7 @@ python AF3_GPU_Memory_Time-Series_Profiler.py \
     --input-dir ./af_input \
     --output-dir ./timeseries_output \
     --sif alphafold3.sif \
-    --af3-db ./af3_DB --models ./models \
+    --af3-db ~/af3_DB --models ./models \
     --monitor-interval 0.5 \
     --n-per-step 3 --workers 8
 ```
