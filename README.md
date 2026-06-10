@@ -17,7 +17,9 @@ AF3Parallel wraps the official AF3 Singularity workflow with VRAM-aware scheduli
 
 Profile-driven VRAM scheduling on A800 80 GB and RTX 4090 24 GB: stepwise peak-memory profiles (**a**), runtime memory traces (**b**), and batch packing with temporal-wave gap filling (**c**).
 
-![AF3Parallel scheduling overview: peak VRAM profiles, runtime memory traces, and temporal-wave batch packing](docs/images/scheduling-overview.png)
+<p align="center">
+  <img src="docs/images/scheduling-overview.png" alt="AF3Parallel scheduling overview: peak VRAM profiles, runtime memory traces, and temporal-wave batch packing" width="100%">
+</p>
 
 ---
 
