@@ -1,0 +1,13 @@
+# Optional dependencies for AF3Parallel.
+#
+# Recommended install (includes these extras):
+#     pip install "af3parallel[extras]"
+#
+# Or from a git checkout:
+#     pip install -e ".[extras]"
+#
+#   psutil  - auto --max-concurrent-tasks cap in af3parallel run
+#   rdkit   - accurate SMILES heavy-atom counts for token estimation
+
+psutil>=5.9
+rdkit>=2022.9

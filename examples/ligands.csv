@@ -1,0 +1,4 @@
+ligand_tag,target_id,smiles
+cmpd001,L,CC(=O)Nc1ccc(O)cc1
+cmpd002,L,O=C(O)c1ccccc1O
+cmpd003,L,CN1C=NC2=C1C(=O)N(C(=O)N2C)C

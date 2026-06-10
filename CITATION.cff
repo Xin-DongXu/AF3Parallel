@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+title: AF3Parallel
+message: >-
+  If you use AF3Parallel in academic work, please cite this repository
+  alongside the AlphaFold 3 paper.
+type: software
+authors:
+  - name: AF3Parallel contributors
+repository-code: https://github.com/Xin-DongXu/AF3Parallel
+license: MIT
+version: 1.1.0
+date-released: 2026-06-09
+keywords:
+  - AlphaFold 3
+  - protein structure prediction
+  - GPU scheduling
+  - high-throughput inference
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Abramson
+      given-names: Josh
+    - family-names: Adler
+      given-names: James
+    - family-names: Dunger
+      given-names: Jack
+  title: >-
+    Accurate structure prediction of biomolecular interactions with AlphaFold 3
+  journal: Nature
+  volume: 630
+  start: 493
+  end: 500
+  year: 2024
+  doi: 10.1038/s41586-024-07487-w

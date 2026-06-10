@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "af3parallel"
+version = "1.1.0"
+description = "Profile-driven multi-GPU toolkit for large-scale AlphaFold 3 inference"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [{ name = "AF3Parallel contributors" }]
+keywords = [
+    "alphafold3",
+    "protein-structure",
+    "gpu-scheduling",
+    "bioinformatics",
+    "singularity",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = []
+
+[project.optional-dependencies]
+extras = [
+    "psutil>=5.9",
+    "rdkit>=2022.9",
+]
+
+[project.scripts]
+af3parallel = "af3parallel.cli.main:main"
+af3parallel-run = "af3parallel._entrypoints:run_parallel"
+af3parallel-profile = "af3parallel._entrypoints:run_gpu_memory_profiler"
+af3parallel-profile-ts = "af3parallel._entrypoints:run_gpu_memory_timeseries_profiler"
+af3parallel-estimate-gpu = "af3parallel._entrypoints:run_gpu_time_estimate"
+af3parallel-estimate-cpu = "af3parallel._entrypoints:run_cpu_time_estimate"
+af3parallel-json = "af3parallel._entrypoints:run_json_integrator"
+af3parallel-monitor = "af3parallel._entrypoints:run_gpu_monitor"
+
+[project.urls]
+Homepage = "https://github.com/Xin-DongXu/AF3Parallel"
+Repository = "https://github.com/Xin-DongXu/AF3Parallel"
+Issues = "https://github.com/Xin-DongXu/AF3Parallel/issues"
+Documentation = "https://github.com/Xin-DongXu/AF3Parallel/tree/main/docs"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
