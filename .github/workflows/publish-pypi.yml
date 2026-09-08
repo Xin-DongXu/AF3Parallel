@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  contents: read
   id-token: write
 
 jobs:
@@ -28,11 +29,25 @@ jobs:
       - name: Validate distributions
         run: twine check dist/*
 
+      - name: Check release tag matches package version
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          echo "GitHub tag version: ${TAG}"
+          echo "Package version:    ${PKG}"
+          if [ "${TAG}" != "${PKG}" ]; then
+            echo "::error::Release tag '${GITHUB_REF_NAME}' does not match package version ${PKG}. Tag v${PKG} (or bump pyproject.toml / src/af3parallel/__version__.py first)."
+            exit 1
+          fi
+
       - name: Publish to PyPI (trusted publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
-        # Configure a "trusted publisher" on PyPI for this GitHub repo,
-        # or replace this step with:
-        #   env:
-        #     TWINE_USERNAME: __token__
-        #     TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        #   run: twine upload dist/*
+        with:
+          skip-existing: true
+          verbose: true
+        # One-time PyPI setup (required):
+        #   https://pypi.org/manage/project/af3parallel/settings/publishing/
+        #   Owner=Xin-DongXu  Repository=AF3Parallel
+        #   Workflow=publish-pypi.yml  Environment=pypi
