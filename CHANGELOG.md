@@ -9,7 +9,7 @@
 - `af3parallel msa` — parallel AF3 data pipeline with default `cpu_count//4` workers and
   gap filling; documents ColabFold as the GPU MSA alternative
 - `af3parallel stats` — summarise `*_summary_confidences.json` (ligand interface or general)
-- Updated overview figure (`docs/images/scheduling-overview.jpg`)
+- Updated overview figure (`docs/images/scheduling-overview.png`)
 
 ### Changed
 

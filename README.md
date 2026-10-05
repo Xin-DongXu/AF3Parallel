@@ -18,7 +18,7 @@ AF3Parallel wraps the official AF3 Singularity workflow with VRAM-aware scheduli
 Profile-driven VRAM scheduling: peak-memory and runtime profiles (**top**), MSA cache construction (**1**), token-balanced LPT allocation (**2**), anchor / wave packing (**3–5**), and temporal-wave execution (**6**).
 
 <p align="center">
-  <img src="docs/images/scheduling-overview.jpg" alt="AF3Parallel overview: MSA cache, GPU profiles, LPT allocation, anchor/wave packing, and temporal-wave execution" width="100%">
+  <img src="docs/images/scheduling-overview.png" alt="AF3Parallel overview: MSA cache, GPU profiles, LPT allocation, anchor/wave packing, and temporal-wave execution" width="100%">
 </p>
 
 ---
