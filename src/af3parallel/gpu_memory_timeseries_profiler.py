@@ -30,6 +30,8 @@ Usage
         --models     ./models \\
         --monitor-interval 0.5 \\
         --n-per-step 3 \\
+        --high-token-threshold 3000 \\
+        --n-per-step-high 1 \\
         --workers    8
 
 Requirements
@@ -345,14 +347,21 @@ def parse_stat_file(stat_file: Path,
 
 def select_representatives(steps: List[Dict],
                            parsed: List[Dict],
-                           n: int = 3) -> List[Dict]:
+                           n: int = 3,
+                           high_token_threshold: int = 3000,
+                           n_high: int = 1) -> List[Dict]:
     """For each gradient step, pick up to n JSON files spread across
-    the [low, mid, high] of its token range. Returns a deduplicated list."""
+    the [low, mid, high] of its token range.
+
+    Gradients whose min_token >= high_token_threshold use n_high samples
+    instead (default: 1 above 3000 tokens). Returns a deduplicated list.
+    """
     selected: List[Dict] = []
     seen: set = set()
 
     for step in steps:
         lo, hi = step["min_token"], step["max_token"]
+        n_step = n_high if lo >= high_token_threshold else n
         cands = sorted(
             [p for p in parsed
              if p["error"] is None and lo <= p["tokens"] <= hi],
@@ -362,10 +371,19 @@ def select_representatives(steps: List[Dict],
             warning(f"  gradient [{lo}-{hi}]: no matching JSON files; skipping.")
             continue
 
-        if len(cands) <= n:
+        if len(cands) <= n_step:
             picks = list(cands)
+        elif n_step == 1:
+            picks = [cands[len(cands) // 2]]
         else:
-            target_idx = [0, len(cands) // 2, len(cands) - 1][:n]
+            # evenly spaced targets: for n=3 → low / mid / high
+            if n_step == 2:
+                target_idx = [0, len(cands) - 1]
+            else:
+                target_idx = [
+                    int(round(i * (len(cands) - 1) / (n_step - 1)))
+                    for i in range(n_step)
+                ]
             picks: List[Dict] = []
             taken: set = set()
             for tgt in target_idx:
@@ -383,14 +401,14 @@ def select_representatives(steps: List[Dict],
                                 break
                     if placed:
                         break
-            picks = picks[:n]
+            picks = picks[:n_step]
 
         for p in picks:
             if p["json_file"] not in seen:
                 seen.add(p["json_file"])
                 selected.append(p)
-                info(f"  gradient [{lo:>6}-{hi:>6}] -> {p['json_file']}  "
-                     f"(tokens={p['tokens']})")
+                info(f"  gradient [{lo:>6}-{hi:>6}] n={n_step} -> "
+                     f"{p['json_file']}  (tokens={p['tokens']})")
 
     info(f"Total files selected for profiling: {len(selected)}")
     return selected
@@ -536,16 +554,23 @@ _CURRENT_CHILD: Optional[subprocess.Popen] = None
 def run_af3_job(parsed: Dict, sif: str, af3_db: str, models: str,
                 out_dir: str, extra_args: List[str],
                 monitor_interval: float, timeout_seconds: int,
-                log_dir: Optional[Path]
+                log_dir: Optional[Path],
+                af3_home: Optional[Path] = None,
                 ) -> Dict:
     """Execute one AF3 job and record GPU memory over time.
 
     Returns {"success": bool, "runtime_seconds": float,
-             "records": List[(elapsed_s, gpu_dict)]}.
+             "records": List[(elapsed_s, gpu_dict)], "returncode": int}.
+
+    Singularity resolves ``python run_alphafold.py`` relative to the process
+    cwd (same convention as ``af3parallel run`` / revision_benchmark). Set
+    ``af3_home`` to the host directory that contains ``run_alphafold.py``.
     """
     global _CURRENT_CHILD
     cmd = _build_cmd(parsed, sif, af3_db, models, out_dir, extra_args)
-    info(f"  CMD: {' '.join(shlex.quote(x) for x in cmd)}")
+    cwd = str(af3_home) if af3_home is not None else None
+    info(f"  CMD: {' '.join(shlex.quote(x) for x in cmd)}"
+         + (f"  (cwd={cwd})" if cwd else ""))
 
     log_path = None
     if log_dir is not None:
@@ -563,6 +588,7 @@ def run_af3_job(parsed: Dict, sif: str, af3_db: str, models: str,
             cmd,
             stdout=log_f if log_path else subprocess.DEVNULL,
             stderr=subprocess.STDOUT,
+            cwd=cwd,
         )
         with _CHILD_LOCK:
             _CURRENT_CHILD = proc
@@ -588,9 +614,17 @@ def run_af3_job(parsed: Dict, sif: str, af3_db: str, models: str,
     tag = "SUCCESS" if success_flag else f"FAILED (rc={rc})"
     (ok_msg if success_flag else warning)(f"  {tag}  runtime={runtime:.1f} s "
                                           f"(log: {log_path})")
+    if not success_flag and log_path is not None and log_path.is_file():
+        try:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")
+            snippet = "\n".join(tail.strip().splitlines()[-25:])
+            if snippet:
+                warning(f"  --- log tail ---\n{snippet}\n  --- end ---")
+        except OSError:
+            pass
 
     return {"success": success_flag, "runtime_seconds": runtime,
-            "records": monitor.get_records()}
+            "returncode": rc, "records": monitor.get_records()}
 
 
 # ===========================================================================
@@ -676,18 +710,32 @@ def _parse_args() -> argparse.Namespace:
                    help="AF3 genetic database directory.")
     p.add_argument("--models", type=str, default="./models",
                    help="AF3 model parameters directory.")
+    p.add_argument(
+        "--af3-home", type=Path, default=None,
+        help="Host directory containing run_alphafold.py. Singularity "
+             "resolves that script via process cwd. Default: $AF3_HOME, "
+             "else parent of --models.",
+    )
     p.add_argument("--log-dir", type=Path, default=None,
                    help="Directory to stream per-job AF3 logs. "
                         "Default: <output-dir>/_af3_logs.")
     p.add_argument("--monitor-interval", type=float, default=0.5,
                    help="GPU sampling interval in seconds.")
     p.add_argument("--n-per-step", type=int, default=3,
-                   help="Representative JSON files per gradient step.")
+                   help="Representative JSON files per gradient step "
+                        "(used when step min_token < --high-token-threshold).")
+    p.add_argument("--high-token-threshold", type=int, default=3000,
+                   help="Gradients with min_token >= this value use "
+                        "--n-per-step-high samples instead (default: 3000).")
+    p.add_argument("--n-per-step-high", type=int, default=1,
+                   help="Samples per gradient when min_token >= "
+                        "--high-token-threshold (default: 1).")
     p.add_argument("--workers", type=int,
                    default=min(8, multiprocessing.cpu_count()),
                    help="Parallel workers for JSON token counting.")
-    p.add_argument("--timeout", type=int, default=7200,
-                   help="Per-job timeout in seconds (default: 2 hours).")
+    p.add_argument("--timeout", type=int, default=28800,
+                   help="Per-job timeout in seconds (default: 8 hours; "
+                        "needed for >3k-token complexes).")
     p.add_argument(
         "--extra-args", type=str, default="",
         help=("Single quoted string of extra flags forwarded to "
@@ -698,16 +746,48 @@ def _parse_args() -> argparse.Namespace:
               "nor --norun_inference is given, --norun_data_pipeline is "
               "appended automatically."),
     )
+    p.add_argument(
+        "--dry-run-select", action="store_true",
+        help="Only detect gradients and select representatives; write "
+             "selection_manifest.tsv under --output-dir and exit "
+             "(no AF3 / nvidia-smi required).",
+    )
     args = p.parse_args()
     if args.monitor_interval <= 0:
         p.error("--monitor-interval must be > 0.")
     if args.n_per_step <= 0:
         p.error("--n-per-step must be > 0.")
+    if args.n_per_step_high <= 0:
+        p.error("--n-per-step-high must be > 0.")
+    if args.high_token_threshold < 0:
+        p.error("--high-token-threshold must be >= 0.")
     if args.workers <= 0:
         p.error("--workers must be > 0.")
     if args.timeout <= 0:
         p.error("--timeout must be > 0.")
     return args
+
+
+def _resolve_af3_home(explicit: Optional[Path], models: str) -> Path:
+    """Directory that contains run_alphafold.py on the host."""
+    candidates: List[Path] = []
+    if explicit is not None:
+        candidates.append(explicit)
+    env = os.environ.get("AF3_HOME")
+    if env:
+        candidates.append(Path(env))
+    models_p = Path(models).resolve()
+    candidates.append(models_p.parent)
+    candidates.append(Path.cwd())
+
+    for c in candidates:
+        if (c / "run_alphafold.py").is_file():
+            return c.resolve()
+    searched = ", ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        "run_alphafold.py not found. Pass --af3-home /path/to/alphafold3 "
+        f"(searched: {searched}). Singularity needs this as process cwd."
+    )
 
 
 def main() -> None:
@@ -721,9 +801,17 @@ def main() -> None:
     if not args.input_dir.is_dir():
         error(f"Input directory not found: {args.input_dir}")
         sys.exit(1)
-    if not Path(args.sif).is_file():
+    if not args.dry_run_select and not Path(args.sif).is_file():
         error(f"Singularity image not found: {args.sif}")
         sys.exit(1)
+
+    af3_home: Optional[Path] = None
+    if not args.dry_run_select:
+        try:
+            af3_home = _resolve_af3_home(args.af3_home, args.models)
+        except FileNotFoundError as exc:
+            error(str(exc))
+            sys.exit(1)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     if args.output_tsv is None:
@@ -739,31 +827,37 @@ def main() -> None:
     info(f"Output dir        : {args.output_dir}")
     info(f"Output TSV        : {args.output_tsv}")
     info(f"Log dir           : {log_dir}")
+    info(f"AF3 home (cwd)    : {af3_home}")
     info(f"Monitor interval  : {args.monitor_interval} s")
-    info(f"Files per gradient: {args.n_per_step}")
+    info(f"Files per gradient: {args.n_per_step} "
+         f"(tokens < {args.high_token_threshold})")
+    info(f"High-token rule   : {args.n_per_step_high} file(s) when "
+         f"min_token >= {args.high_token_threshold}")
     info(f"Parse workers     : {args.workers}")
     info(f"SIF image         : {args.sif}")
     info(f"Per-job timeout   : {args.timeout} s")
+    info(f"Dry-run select    : {args.dry_run_select}")
     if extra_args:
         info(f"Extra AF3 flags   : {extra_args}")
 
-    # ---- Tool checks ----
-    try:
-        r = subprocess.run(["nvidia-smi"], capture_output=True, timeout=10)
-        if r.returncode != 0:
-            raise RuntimeError(f"nvidia-smi exit={r.returncode}")
-        info("nvidia-smi        : OK")
-    except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError) as exc:
-        error(f"nvidia-smi unavailable: {exc}")
-        sys.exit(1)
-    try:
-        subprocess.run(["singularity", "--version"],
-                       capture_output=True, check=True, timeout=10)
-        info("singularity       : OK")
-    except (FileNotFoundError, subprocess.CalledProcessError,
-            subprocess.TimeoutExpired):
-        error("singularity not available in PATH.")
-        sys.exit(1)
+    # ---- Tool checks (skipped for dry-run selection) ----
+    if not args.dry_run_select:
+        try:
+            r = subprocess.run(["nvidia-smi"], capture_output=True, timeout=10)
+            if r.returncode != 0:
+                raise RuntimeError(f"nvidia-smi exit={r.returncode}")
+            info("nvidia-smi        : OK")
+        except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError) as exc:
+            error(f"nvidia-smi unavailable: {exc}")
+            sys.exit(1)
+        try:
+            subprocess.run(["singularity", "--version"],
+                           capture_output=True, check=True, timeout=10)
+            info("singularity       : OK")
+        except (FileNotFoundError, subprocess.CalledProcessError,
+                subprocess.TimeoutExpired):
+            error("singularity not available in PATH.")
+            sys.exit(1)
 
     # ---- Step 1: gradient detection ----
     info("=" * 64)
@@ -805,13 +899,32 @@ def main() -> None:
 
     # ---- Step 3: select representatives ----
     info("=" * 64)
-    info(f"Step 3/4 - Selecting up to {args.n_per_step} "
-         f"representative(s) per gradient ...")
-    selected = select_representatives(steps, parsed_all, n=args.n_per_step)
+    info(f"Step 3/4 - Selecting representatives "
+         f"(n={args.n_per_step} below {args.high_token_threshold} tokens; "
+         f"n={args.n_per_step_high} at/above) ...")
+    selected = select_representatives(
+        steps, parsed_all,
+        n=args.n_per_step,
+        high_token_threshold=args.high_token_threshold,
+        n_high=args.n_per_step_high,
+    )
     if not selected:
         error("No files selected. Verify that token ranges in the input "
               "directory overlap with the gradient steps from the stat file.")
         sys.exit(1)
+
+    # Write selection manifest (always; useful for dry-run and auditing)
+    manifest = args.output_dir / "selection_manifest.tsv"
+    with open(manifest, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, delimiter="\t")
+        w.writerow(["json_file", "json_path", "token_count", "rank"])
+        for i, p in enumerate(selected, 1):
+            w.writerow([p["json_file"], p.get("json_path", ""), p["tokens"], i])
+    ok_msg(f"Selection manifest: {manifest}  ({len(selected)} jobs)")
+
+    if args.dry_run_select:
+        ok_msg("Dry-run complete (no AF3 jobs launched).")
+        return
 
     # ---- Step 4: run AF3 + monitor ----
     info("=" * 64)
@@ -819,6 +932,8 @@ def main() -> None:
 
     first_write = True
     total = len(selected)
+    quick_fail_streak = 0
+    n_ok = 0
     for idx, parsed in enumerate(selected, 1):
         info(f"[Job {idx}/{total}] {parsed['json_file']} "
              f"(tokens={parsed['tokens']})")
@@ -832,6 +947,7 @@ def main() -> None:
             monitor_interval=args.monitor_interval,
             timeout_seconds=args.timeout,
             log_dir=log_dir,
+            af3_home=af3_home,
         )
         append_timeseries(
             out_tsv=args.output_tsv,
@@ -851,9 +967,27 @@ def main() -> None:
                f"runtime = {result['runtime_seconds']:.1f} s  |  "
                f"{'OK' if result['success'] else 'FAILED'}")
 
+        if result["success"]:
+            n_ok += 1
+            quick_fail_streak = 0
+        else:
+            # Abort if AF3 is clearly misconfigured (instant exit, 0 VRAM).
+            if result["runtime_seconds"] < 15.0 and peak <= 0:
+                quick_fail_streak += 1
+            else:
+                quick_fail_streak = 0
+            if quick_fail_streak >= 3:
+                error(
+                    f"Aborting after {quick_fail_streak} consecutive instant "
+                    f"failures (runtime <15 s, peak VRAM=0). Check AF3_HOME "
+                    f"(cwd={af3_home}), SIF, and the log tail above. "
+                    f"Likely cause: run_alphafold.py not found / wrong cwd."
+                )
+                sys.exit(2)
+
     # ---- Done ----
     info("=" * 64)
-    ok_msg(f"All {total} job(s) complete.")
+    ok_msg(f"Finished {total} job(s); {n_ok} succeeded.")
     ok_msg(f"Time-series TSV: {args.output_tsv}")
     info("Filter rows by 'json_file' to plot each job's VRAM curve "
          "independently.")

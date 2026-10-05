@@ -5,30 +5,26 @@ batch runtime ahead of time, then run the batch in parallel across all available
 GPUs with VRAM-aware scheduling.
 
 ```
-                   +--------------------------------+
-                   | AF3 input JSONs                |
-                   | (af3parallel json              |
-                   |  or hand-written)              |
-                   +---------------+----------------+
-                                   |
-        +--------------------------+--------------------------+
-        |                                                     |
-        v                                                     v
-+---------------------+                            +-----------------------+
-| af3parallel profile |  one-shot, per GPU model   | af3parallel           |
-|                     | -----TSV profile---------> | estimate-gpu/cpu      |
-| (run once per GPU)  |                            | (estimate batch wall) |
-+----------+----------+                            +-----------------------+
+  FASTA / PDB / manifest
            |
-           | TSV profile (token_count, peak_memory_mb, runtime_seconds)
            v
-+-------------------------------------------+
-| af3parallel run                           |
-|   - LPT distribution across GPUs          |
-|   - VRAM-aware batching                   |
-|   - Temporal-wave scheduling              |
-|   - Streaming TSV log                     |
-+-------------------------------------------+
+  af3parallel build-json
+    natural ──► (omit MSA keys) ──► af3parallel msa  ──┐
+    denovo  ──► (empty MSA)  ──────────────────────────┤
+                                                       v
+                                              json ready for inference
+           |
+           +------------------+------------------+
+           |                                     |
+           v                                     v
+  af3parallel profile                   af3parallel estimate-gpu/cpu
+           |                                     |
+           +------------------+------------------+
+                              v
+                     af3parallel run
+                       (LPT + waves)
+                              v
+                     af3parallel stats
 ```
 
 ## End-to-end example

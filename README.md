@@ -15,10 +15,10 @@ AF3Parallel wraps the official AF3 Singularity workflow with VRAM-aware scheduli
 
 ## Overview
 
-Profile-driven VRAM scheduling on A800 80 GB and RTX 4090 24 GB: stepwise peak-memory profiles (**a**), runtime memory traces (**b**), and batch packing with temporal-wave gap filling (**c**).
+Profile-driven VRAM scheduling: peak-memory and runtime profiles (**top**), MSA cache construction (**1**), token-balanced LPT allocation (**2**), anchor / wave packing (**3–5**), and temporal-wave execution (**6**).
 
 <p align="center">
-  <img src="docs/images/scheduling-overview.png" alt="AF3Parallel scheduling overview: peak VRAM profiles, runtime memory traces, and temporal-wave batch packing" width="100%">
+  <img src="docs/images/scheduling-overview.jpg" alt="AF3Parallel overview: MSA cache, GPU profiles, LPT allocation, anchor/wave packing, and temporal-wave execution" width="100%">
 </p>
 
 ---
@@ -27,12 +27,15 @@ Profile-driven VRAM scheduling on A800 80 GB and RTX 4090 24 GB: stepwise peak-m
 
 | Tool | CLI command | Purpose |
 | --- | --- | --- |
+| JSON builder | `af3parallel build-json` | Build AF3 inputs from FASTA/PDB/manifest (**natural** = MSA later; **denovo** = empty MSA) |
+| Parallel MSA | `af3parallel msa` | CPU data pipeline with fixed concurrency (default `cpu_count//4`); or use [ColabFold](https://github.com/sokrypton/ColabFold) |
 | Multi-GPU executor | `af3parallel run` | Distribute AF3 jobs across GPUs with LPT scheduling, VRAM-aware batching, and temporal-wave packing |
 | Peak VRAM profiler | `af3parallel profile` | One-shot peak-memory scan → TSV profile for scheduling |
 | Time-series profiler | `af3parallel profile-ts` | Sub-second VRAM sampling during AF3 runs |
 | GPU runtime estimator | `af3parallel estimate-gpu` | Predict serial GPU wall time from a token profile |
 | CPU/MSA estimator | `af3parallel estimate-cpu` | Predict data-pipeline wall time from a protein-length profile |
-| JSON integrator | `af3parallel json` | Batch-edit AF3 inputs (seeds, ligands, nucleic acids, ions) |
+| JSON integrator | `af3parallel json` | Batch-edit existing AF3 inputs (seeds, ligands, nucleic acids, ions) |
+| Result stats | `af3parallel stats` | Summarise `*_summary_confidences.json` (ligand interfaces or general scores) |
 | GPU monitor | `af3parallel monitor` | Standalone `nvidia-smi` memory logger |
 
 Built-in VRAM/runtime profiles are **measured** on NVIDIA A800 80 GB and RTX 4090 24 GB; other GPUs require a one-time custom profile from `af3parallel profile`.
@@ -73,6 +76,22 @@ af3parallel --help
 Run from your AF3 working tree (`alphafold3/`):
 
 ```bash
+# 0a. Natural proteins: build JSON (no MSA fields) → data pipeline later
+af3parallel build-json natural \
+    --fasta ./proteome.fasta --ccd ATP --out-dir ./json_seq_only
+
+# 0b. De novo / designed proteins: empty MSA → inference without data pipeline
+af3parallel build-json denovo \
+    --fasta ./designs.fasta --out-dir ./json_denovo
+
+# 0c. Parallel MSA (AF3 data pipeline). Default workers = cpu_count/4
+af3parallel msa \
+    --input-dir ./json_seq_only --output-dir ./msa_af_output \
+    --harvest-dir ./json_with_msa \
+    --sif alphafold3.sif --af3-db ~/af3_DB --models ./models \
+    --af3-home .
+# Alternative: ColabFold GPU MSA — https://github.com/sokrypton/ColabFold
+
 # 1. Profile once per GPU model (skip for built-in a800-80g / rtx4090)
 af3parallel profile \
     -i ./profile_inputs -o my_gpu_profile.tsv \
@@ -80,14 +99,17 @@ af3parallel profile \
 
 # 2. (Optional) estimate batch runtime
 af3parallel estimate-gpu \
-    --input-dir ./af_input --profile my_gpu_profile.tsv \
+    --input-dir ./json_with_msa --profile my_gpu_profile.tsv \
     --output-tsv estimate_breakdown.tsv --workers 16
 
-# 3. Run the batch across all GPUs
+# 3. Run the batch across all GPUs (MSA-bearing or denovo empty-MSA JSON)
 af3parallel run \
-    -i ./af_input -o results.tsv --output-dir ./af_output \
+    -i ./json_with_msa -o results.tsv --output-dir ./af_output \
     --sif alphafold3.sif --af3-db ~/af3_DB --models ./models \
     --gpus 0,1,2,3 --memory-profile my_gpu_profile.tsv
+
+# 4. Summarise confidence JSONs
+af3parallel stats -i ./af_output -r -o detail.csv -s summary.csv
 ```
 
 Dry-run: `af3parallel run ... --test-only`

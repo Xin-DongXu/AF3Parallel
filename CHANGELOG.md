@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.2.0] - 2026-10-01
+
+### Added
+
+- `af3parallel build-json natural|denovo` — build AF3 input JSON from FASTA/PDB/manifest
+  (natural: MSA omitted for data pipeline; denovo: empty MSA for designed proteins)
+- `af3parallel msa` — parallel AF3 data pipeline with default `cpu_count//4` workers and
+  gap filling; documents ColabFold as the GPU MSA alternative
+- `af3parallel stats` — summarise `*_summary_confidences.json` (ligand interface or general)
+- Updated overview figure (`docs/images/scheduling-overview.jpg`)
+
+### Changed
+
+- README / workflow docs cover build → MSA → run → stats
+- Optional dependency: `tqdm` (progress bars for stats)
+
 ## [1.1.0] - 2026-06-10
 
 ### Added

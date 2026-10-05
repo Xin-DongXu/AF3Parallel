@@ -1441,6 +1441,17 @@ def parse_json_file(json_path):
 #  File Collection (Parallel)
 # ---------------------------------------------
 
+def _reset_pool_signals():
+    """Child processes must not inherit the parent SIGINT/SIGTERM handler.
+
+    That handler calls sys.exit(130) and prints 'Interrupt received'.  When
+    the parse Pool is torn down it SIGTERMs workers; inherited handlers then
+    kill workers uncleanly and the parent can hang in Pool.join().
+    """
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def _parse_single_json_for_process(json_path_str):
     """Multiprocessing-safe variant of parse_json_file (silently
     returns None on failure so a worker error never poisons the pool)."""
@@ -1521,7 +1532,7 @@ def collect_json_files(input_dir, output_dir, skip_existing=True,
         ctx = multiprocessing.get_context('spawn')
     info(f"Multiprocessing start method: {_preferred_ctx}")
 
-    with ctx.Pool(processes=num_workers) as pool:
+    with ctx.Pool(processes=num_workers, initializer=_reset_pool_signals) as pool:
         completed = 0
         total = len(json_paths_str)
         last_progress = -1

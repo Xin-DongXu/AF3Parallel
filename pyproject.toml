@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "af3parallel"
-version = "1.1.0"
+version = "1.2.0"
 description = "Profile-driven multi-GPU toolkit for large-scale AlphaFold 3 inference"
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,6 +37,7 @@ dependencies = []
 extras = [
     "psutil>=5.9",
     "rdkit>=2022.9",
+    "tqdm>=4.64",
 ]
 
 [project.scripts]
@@ -47,6 +48,9 @@ af3parallel-profile-ts = "af3parallel._entrypoints:run_gpu_memory_timeseries_pro
 af3parallel-estimate-gpu = "af3parallel._entrypoints:run_gpu_time_estimate"
 af3parallel-estimate-cpu = "af3parallel._entrypoints:run_cpu_time_estimate"
 af3parallel-json = "af3parallel._entrypoints:run_json_integrator"
+af3parallel-build-json = "af3parallel._entrypoints:run_json_builder"
+af3parallel-msa = "af3parallel._entrypoints:run_msa_parallel"
+af3parallel-stats = "af3parallel._entrypoints:run_result_stats"
 af3parallel-monitor = "af3parallel._entrypoints:run_gpu_monitor"
 
 [project.urls]

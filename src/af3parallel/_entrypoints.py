@@ -49,6 +49,27 @@ def run_json_integrator() -> int:
     return int(result) if result is not None else 0
 
 
+def run_json_builder() -> int:
+    from af3parallel.json_builder import main
+
+    result = main()
+    return int(result) if result is not None else 0
+
+
+def run_msa_parallel() -> int:
+    from af3parallel.msa_parallel import main
+
+    result = main()
+    return int(result) if result is not None else 0
+
+
+def run_result_stats() -> int:
+    from af3parallel.result_stats import main
+
+    result = main()
+    return int(result) if result is not None else 0
+
+
 def run_gpu_monitor() -> int:
     from af3parallel.gpu_monitor import main
 
