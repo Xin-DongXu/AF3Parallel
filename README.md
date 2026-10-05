@@ -5,195 +5,200 @@
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![AlphaFold 3](https://img.shields.io/badge/AlphaFold_3-v3.0.1-green.svg)](https://github.com/google-deepmind/alphafold3)
 
-Profile-driven toolkit for running [AlphaFold 3](https://github.com/google-deepmind/alphafold3) inference at scale on multi-GPU Linux clusters.
+Process-level scheduler for large-scale [AlphaFold 3](https://github.com/google-deepmind/alphafold3) inference on multi-GPU Linux systems.
 
-AF3Parallel wraps the official AF3 Singularity workflow with VRAM-aware scheduling, temporal-wave batching, and companion utilities for profiling, runtime estimation, and input JSON preparation. Install from **PyPI** and invoke all tools through a single CLI.
+AF3Parallel does not modify AF3 weights, kernels, or the Singularity image. Each prediction is an independent `run_alphafold.py` process. The scheduler tokenises inputs, assigns them by longest-processing-time (LPT), and packs concurrent jobs under a measured VRAM envelope, with optional temporal-wave co-scheduling. All utilities are invoked as `af3parallel <command>`.
 
-**PyPI:** https://pypi.org/project/af3parallel/
-
----
-
-## Overview
-
-Profile-driven VRAM scheduling: peak-memory and runtime profiles (**top**), MSA cache construction (**1**), token-balanced LPT allocation (**2**), anchor / wave packing (**3–5**), and temporal-wave execution (**6**).
+**Package:** https://pypi.org/project/af3parallel/ · **Source:** https://github.com/Xin-DongXu/AF3Parallel
 
 <p align="center">
-  <img src="docs/images/scheduling-overview.png" alt="AF3Parallel overview: MSA cache, GPU profiles, LPT allocation, anchor/wave packing, and temporal-wave execution" width="100%">
+  <img src="docs/images/scheduling-overview.png" alt="AF3Parallel scheduling: measured VRAM profiles, MSA cache, LPT allocation, anchor and wave packing, and temporal-wave execution" width="100%">
 </p>
+
+*Figure. Measured peak-memory and runtime profiles (top); MSA cache construction (1); token-balanced LPT assignment (2); anchor selection and VRAM packing (3–5); temporal-wave execution (6).*
 
 ---
 
-## What's included
+## Scope
 
-| Tool | CLI command | Purpose |
-| --- | --- | --- |
-| JSON builder | `af3parallel build-json` | Build AF3 inputs from FASTA/PDB/manifest (**natural** = MSA later; **denovo** = empty MSA) |
-| Parallel MSA | `af3parallel msa` | CPU data pipeline with fixed concurrency (default `cpu_count//4`); or use [ColabFold](https://github.com/sokrypton/ColabFold) |
-| Multi-GPU executor | `af3parallel run` | Distribute AF3 jobs across GPUs with LPT scheduling, VRAM-aware batching, and temporal-wave packing |
-| Peak VRAM profiler | `af3parallel profile` | One-shot peak-memory scan → TSV profile for scheduling |
-| Time-series profiler | `af3parallel profile-ts` | Sub-second VRAM sampling during AF3 runs |
-| GPU runtime estimator | `af3parallel estimate-gpu` | Predict serial GPU wall time from a token profile |
-| CPU/MSA estimator | `af3parallel estimate-cpu` | Predict data-pipeline wall time from a protein-length profile |
-| JSON integrator | `af3parallel json` | Batch-edit existing AF3 inputs (seeds, ligands, nucleic acids, ions) |
-| Result stats | `af3parallel stats` | Summarise `*_summary_confidences.json` (ligand interfaces or general scores) |
-| GPU monitor | `af3parallel monitor` | Standalone `nvidia-smi` memory logger |
+The official AF3 release executes one job per GPU. AF3Parallel is the layer that turns a directory of JSON inputs into a multi-GPU campaign:
 
-Built-in VRAM/runtime profiles are **measured** on NVIDIA A800 80 GB and RTX 4090 24 GB; other GPUs require a one-time custom profile from `af3parallel profile`.
+1. **Profile.** Peak VRAM and runtime are tabulated against token count. Presets `a800-80g` and `rtx4090` were measured on NVIDIA A800 80 GB and RTX 4090 24 GB. Other devices require `af3parallel profile`.
+2. **Assign.** Jobs are placed across GPUs by LPT so token load stays balanced.
+3. **Pack.** On each GPU, additional jobs are admitted while the sum of profiled peaks fits the memory budget. A long job is the anchor; shorter jobs may run as temporal waves inside that window.
+4. **Launch.** Each job is a separate Singularity process. Model weights are not shared across concurrent jobs.
+
+Inference scheduling (`af3parallel run`) expects MSA-bearing JSON, or empty MSA for designed sequences. MSA generation is a separate stage (`af3parallel msa`, or [ColabFold](https://github.com/sokrypton/ColabFold)) and is not included in inference wall-clock.
+
+---
+
+## Requirements
+
+Complete the [AlphaFold 3 v3.0.1 installation](https://github.com/google-deepmind/alphafold3/blob/v3.0.1/docs/installation.md) before using this package (Singularity image, model weights, genetic databases). Layout notes: [docs/installation.md](docs/installation.md).
+
+| Requirement | Role |
+| --- | --- |
+| Linux, NVIDIA GPU, compute capability ≥ 8.0 | Execution host |
+| AF3 v3.0.1 working directory | Contains `run_alphafold.py`, the `.sif`, and `models/` |
+| Python ≥ 3.8 | Host-side scheduler |
+| `nvidia-smi` | Occupancy monitoring |
+
+Optional extras (`psutil`, `rdkit`, `tqdm`) are installed with `af3parallel[extras]`. `psutil` enables an automatic host-memory cap on concurrent tasks.
 
 ---
 
 ## Installation
 
-### Prerequisites
-
-Complete the [official AF3 v3.0.1 installation](https://github.com/google-deepmind/alphafold3/blob/v3.0.1/docs/installation.md) first (Singularity image, model weights, genetic databases). Details: [docs/installation.md](docs/installation.md).
-
-| Component | Required | Notes |
-| --- | --- | --- |
-| AlphaFold 3 v3.0.1 + Singularity | Yes | Run from your AF3 working directory |
-| Linux + NVIDIA GPU (CC ≥ 8.0) | Yes | e.g. A100, H100, RTX 4090 |
-| Python ≥ 3.8 | Yes | Core tools use the standard library |
-| `psutil` | Optional | Auto `--max-concurrent-tasks` in `af3parallel run` |
-| `rdkit` | Optional | More accurate SMILES heavy-atom counts |
-
-### pip
-
 ```bash
 pip install "af3parallel[extras]"
+af3parallel --version
 ```
 
-Verify:
+From source:
 
 ```bash
-af3parallel --version
-af3parallel --help
+git clone https://github.com/Xin-DongXu/AF3Parallel.git
+cd AF3Parallel
+pip install -e ".[extras]"
 ```
+
+Commands that invoke AF3 (`run`, `msa`, `profile`, `profile-ts`) must be started from the AF3 working directory, or given absolute paths for `--sif`, `--af3-db`, `--models`, and `--af3-home`.
 
 ---
 
-## Quick start
+## Usage
 
-Run from your AF3 working tree (`alphafold3/`):
+Set the AF3 paths once, then follow the branch that matches the inputs.
 
 ```bash
-# 0a. Natural proteins: build JSON (no MSA fields) → data pipeline later
+cd /path/to/alphafold3
+
+export SIF=alphafold3.sif
+export AF3_DB="${HOME}/af3_DB"
+export MODELS=./models
+# a800-80g | rtx4090
+export GPU_PRESET=a800-80g
+```
+
+### A. Natural proteins
+
+Sequence-only JSON is written without MSA keys so the data pipeline can populate them. Inference is a later step.
+
+```bash
 af3parallel build-json natural \
     --fasta ./proteome.fasta --ccd ATP --out-dir ./json_seq_only
 
-# 0b. De novo / designed proteins: empty MSA → inference without data pipeline
-af3parallel build-json denovo \
-    --fasta ./designs.fasta --out-dir ./json_denovo
-
-# 0c. Parallel MSA (AF3 data pipeline). Default workers = cpu_count/4
 af3parallel msa \
-    --input-dir ./json_seq_only --output-dir ./msa_af_output \
+    --input-dir ./json_seq_only \
+    --output-dir ./msa_af_output \
     --harvest-dir ./json_with_msa \
-    --sif alphafold3.sif --af3-db ~/af3_DB --models ./models \
+    --sif "${SIF}" --af3-db "${AF3_DB}" --models "${MODELS}" \
     --af3-home .
-# Alternative: ColabFold GPU MSA — https://github.com/sokrypton/ColabFold
 
-# 1. Profile once per GPU model (skip for built-in a800-80g / rtx4090)
-af3parallel profile \
-    -i ./profile_inputs -o my_gpu_profile.tsv \
-    --sif alphafold3.sif --af3-db ~/af3_DB --models ./models
-
-# 2. (Optional) estimate batch runtime
-af3parallel estimate-gpu \
-    --input-dir ./json_with_msa --profile my_gpu_profile.tsv \
-    --output-tsv estimate_breakdown.tsv --workers 16
-
-# 3. Run the batch across all GPUs (MSA-bearing or denovo empty-MSA JSON)
 af3parallel run \
     -i ./json_with_msa -o results.tsv --output-dir ./af_output \
-    --sif alphafold3.sif --af3-db ~/af3_DB --models ./models \
-    --gpus 0,1,2,3 --memory-profile my_gpu_profile.tsv
+    --sif "${SIF}" --af3-db "${AF3_DB}" --models "${MODELS}" \
+    --gpus 0,1,2,3 --gpu-preset "${GPU_PRESET}"
 
-# 4. Summarise confidence JSONs
 af3parallel stats -i ./af_output -r -o detail.csv -s summary.csv
 ```
 
-Dry-run: `af3parallel run ... --test-only`
-
-Bulk ligand replacement (directory of JSON files, in place):
+A new ligand against the same proteins reuses the MSA cache:
 
 ```bash
 af3parallel json replace-ligand \
-    --input-dir ./inputs --in-place \
-    --target-id L \
-    --smiles "CC(=O)Nc1ccc(O)cc1" \
-    --ligand-tag paracetamol \
-    --workers 8
+    --input-dir ./json_with_msa --in-place \
+    --target-id L --smiles "CC(=O)Nc1ccc(O)cc1" \
+    --ligand-tag paracetamol --workers 8
 ```
 
-Applies the same replacement to every `*.json` in `./inputs`; files are updated atomically in place.
+### B. Designed sequences
 
----
-
-## Typical workflow
-
-```
-  AF3 input JSONs  ──►  af3parallel profile  ──►  TSV profile
-         │                                              │
-         │                                              ▼
-         ├──►  af3parallel estimate-gpu/cpu             │
-         │                                              ▼
-         └──────────────────────────────►  af3parallel run  ──►  results.tsv
-```
-
-See [docs/workflow.md](docs/workflow.md).
-
----
-
-## CLI reference
+`build-json denovo` writes an empty MSA. Skip `msa`.
 
 ```bash
-af3parallel <command> [arguments]
-af3parallel run --help
-python -m af3parallel --help
+af3parallel build-json denovo --fasta ./designs.fasta --out-dir ./json_denovo
+
+af3parallel run \
+    -i ./json_denovo -o results.tsv --output-dir ./af_output \
+    --sif "${SIF}" --af3-db "${AF3_DB}" --models "${MODELS}" \
+    --gpus 0,1,2,3 --gpu-preset "${GPU_PRESET}"
 ```
 
-| Subcommand | Standalone alias |
+### C. Existing MSA JSON
+
+If inputs already contain MSA (or an empty de novo MSA), only `run` is required. Add `--test-only` to print the GPU assignment, batches, and waves without launching AF3.
+
+```bash
+af3parallel run \
+    -i ./json_with_msa -o results.tsv --output-dir ./af_output \
+    --sif "${SIF}" --af3-db "${AF3_DB}" --models "${MODELS}" \
+    --gpus 0,1,2,3 --gpu-preset "${GPU_PRESET}" \
+    --test-only
+```
+
+### D. Unprofiled hardware
+
+Do not rely on VRAM auto-detection. Measure a profile once and pass it explicitly.
+
+```bash
+af3parallel profile \
+    -i ./profile_inputs -o my_gpu_profile.tsv \
+    --sif "${SIF}" --af3-db "${AF3_DB}" --models "${MODELS}"
+
+af3parallel run ... --memory-profile my_gpu_profile.tsv
+af3parallel estimate-gpu \
+    -i ./json_with_msa -p my_gpu_profile.tsv \
+    -o estimate_breakdown.tsv --workers 16
+```
+
+`estimate-gpu` reports the sum of profiled serial task times. It is a planning figure, not a measured one-GPU wall-clock.
+
+---
+
+## Scheduling
+
+| Control | Default | Effect |
+| --- | --- | --- |
+| `--gpu-preset` | auto from `nvidia-smi` | `a800-80g` or `rtx4090` when the device matches a measured profile |
+| `--memory-profile` | — | Overrides the preset with a user TSV |
+| `--safety-margin` | `0.10` | Fraction of the packing budget held in reserve |
+| `--vram-margin` | `0.95` | Fraction of physical VRAM treated as usable for overflow classification |
+| temporal waves | on | Disable with `--no-temporal-waves` |
+| `--max-workers 1` | off | One job per GPU (exclusive execution; no packing) |
+| `--norun-data-pipeline` | passed by `run` | Inference only; MSA must already be in the JSON |
+
+Wave co-scheduling increases campaign throughput when residual VRAM remains after the anchor. It also lengthens per-task runtime, because concurrent processes share the device. On 24 GB cards the residual after a long anchor is often too small for waves to help; packing without waves is then the appropriate setting.
+
+`af3parallel run` streams a per-task TSV (`-o`). Failed tasks can be retried after the main schedule. SIGINT restores staged JSON files to the input directory.
+
+---
+
+## Commands
+
+`af3parallel <command> --help` prints the full option list. Standalone entry points (`af3parallel-run`, …) call the same functions.
+
+| Command | Function |
 | --- | --- |
-| `run` | `af3parallel-run` |
-| `profile` | `af3parallel-profile` |
-| `profile-ts` | `af3parallel-profile-ts` |
-| `estimate-gpu` | `af3parallel-estimate-gpu` |
-| `estimate-cpu` | `af3parallel-estimate-cpu` |
-| `json` | `af3parallel-json` |
-| `monitor` | `af3parallel-monitor` |
+| `build-json` | AF3 JSON from FASTA, PDB, or a manifest (`natural` or `denovo`) |
+| `msa` | Parallel AF3 data pipeline |
+| `run` | Multi-GPU inference |
+| `json` | Edit existing JSON (seeds, ligands, nucleic acids, ions) |
+| `stats` | Tables from `*_summary_confidences.json` |
+| `profile` | Peak-VRAM profile for a new GPU |
+| `profile-ts` | VRAM time series during inference |
+| `estimate-gpu` | Serial GPU-time estimate from a token profile |
+| `estimate-cpu` | Data-pipeline time estimate from a length profile |
+| `monitor` | `nvidia-smi` logger |
 
-Full flags: [docs/cli-reference.md](docs/cli-reference.md)
-
----
-
-## Features
-
-- Token-balanced **LPT** multi-GPU distribution
-- **VRAM-aware** batching with temporal-wave scheduling
-- Built-in profiles for **A800 80 GB** and **RTX 4090 24 GB**
-- Streaming TSV logs, per-task retry, SIGINT cleanup
-- Optional `psutil` CPU-RAM autocap and `rdkit` SMILES parsing
+Extended notes live under [docs/](docs/README.md): [inputs](docs/build-inputs.md), [MSA](docs/msa.md), [workflow](docs/workflow.md), [profiles](docs/gpu-profiles.md), [CLI](docs/cli-reference.md), [JSON editor](docs/json-integrator.md), [statistics](docs/result-stats.md), [operational notes](docs/tips.md).
 
 ---
 
-## Documentation
+## Citation
 
-| Topic | Guide |
-| --- | --- |
-| [docs/README.md](docs/README.md) | Documentation index |
-| [docs/installation.md](docs/installation.md) | Install & prerequisites |
-| [docs/workflow.md](docs/workflow.md) | End-to-end workflow |
-| [docs/gpu-profiles.md](docs/gpu-profiles.md) | GPU presets & profile TSV |
-| [docs/cli-reference.md](docs/cli-reference.md) | CLI flags & outputs |
-| [docs/json-integrator.md](docs/json-integrator.md) | Input JSON editor |
-| [docs/tips.md](docs/tips.md) | Tips & troubleshooting |
-
----
-
-## License & citation
-
-MIT License — see [LICENSE](LICENSE). AlphaFold 3 is licensed separately by Google DeepMind.
+MIT License — see [LICENSE](LICENSE). AlphaFold 3 is distributed separately by Google DeepMind.
 
 > Abramson, J., Adler, J., Dunger, J. *et al.* Accurate structure prediction of biomolecular interactions with AlphaFold 3. *Nature* **630**, 493–500 (2024). https://doi.org/10.1038/s41586-024-07487-w
 
-See [CITATION.cff](CITATION.cff).
+Software citation metadata: [CITATION.cff](CITATION.cff).
